@@ -1,0 +1,6 @@
+# AgentFence - Milestone 1 dependencies
+# The sample agent runs fully offline: no LLM SDK, no API key, no network.
+# Python 3.10+ is required.
+
+# Testing
+pytest>=8.0

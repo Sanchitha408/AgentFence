@@ -1,0 +1,23 @@
+# Python
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Environment
+.env
+.env.*
+
+# Tooling / editors
+.venv/
+.idea/
+.vscode/
+.DS_Store
+
+# Later-milestone artifacts (not part of Milestone 1)
+data/
+logs/
+*.db
+*.sqlite3
