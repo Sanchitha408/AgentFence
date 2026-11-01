@@ -21,3 +21,4 @@ data/
 logs/
 *.db
 *.sqlite3
+reports/audit.jsonl
