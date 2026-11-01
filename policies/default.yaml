@@ -1,0 +1,132 @@
+# AgentFence default policy
+#
+# Rules are evaluated top to bottom and the FIRST match decides. If no rule
+# matches, `default_decision` applies - here that is "block", so anything the
+# policy did not explicitly permit is refused.
+#
+# decision: allow  -> run the tool
+#           block  -> refuse, the agent gets "blocked by policy: <rule id>"
+#           ask    -> refuse for now and flag for human approval
+#
+# Paths are normalised before matching, so "/home/user/../../etc/passwd" is
+# tested as "/etc/passwd".
+
+name: default
+version: 1
+default_decision: block
+default_reason: "deny by default: no rule allowed this call"
+
+rules:
+  # 1. The only tools this agent is allowed to hold at all.
+  - id: tool-allowlist
+    type: tool_allowlist
+    decision: block
+    reason: "only read_file, send_email, run_shell and http_get are exposed"
+    tools: [read_file, send_email, run_shell, http_get]
+
+  # 2. Credentials are never readable, no matter who asks.
+  - id: path-sensitive-deny
+    type: path_deny
+    decision: block
+    reason: "credentials, keys and .env files are never readable by the agent"
+    tools: [read_file, run_shell]
+    patterns:
+      - "/home/user/secrets/**"
+      - "**/.ssh/**"
+      - "**/.env"
+      - "**/.aws/**"
+      - "**/id_rsa"
+
+  # 3. Anything outside the workspace is out of bounds. A ".." that escapes
+  #    /home/user lands here because the path is normalised first.
+  - id: path-outside-workspace
+    type: path_outside
+    decision: block
+    reason: "the agent may only touch files under /home/user"
+    tools: [read_file, run_shell]
+    roots:
+      - "/home/user/**"
+
+  # 4. Shell commands that destroy data or reach the network.
+  - id: shell-denylist
+    type: shell_deny
+    decision: block
+    reason: "destructive and network-reaching shell commands are disabled"
+    patterns:
+      - "rm *"
+      - "rmdir *"
+      - "mv *"
+      - "chmod *"
+      - "chown *"
+      - "dd *"
+      - "curl *"
+      - "wget *"
+      - "nc *"
+      - "ssh *"
+      - "sudo *"
+
+  # 5. Interpreters would let the agent step around these command checks.
+  - id: shell-interpreters
+    type: shell_deny
+    decision: block
+    reason: "interpreters are not allowed; they bypass command-level checks"
+    patterns:
+      - "python*"
+      - "python3 *"
+      - "bash *"
+      - "sh *"
+      - "zsh *"
+      - "node *"
+      - "perl *"
+      - "ruby *"
+
+  # 6. Reading and listing is normal work, so allow the read-only commands.
+  - id: shell-readonly-allow
+    type: shell_allow
+    decision: allow
+    reason: "listing and printing files is a normal research task"
+    patterns:
+      - "ls"
+      - "ls *"
+      - "cat *"
+      - "pwd"
+      - "whoami"
+      - "env"
+      - "echo *"
+
+  # 7. Reads inside the workspace are the agent's job.
+  - id: path-workspace-allow
+    type: path_inside
+    decision: allow
+    reason: "the workspace is the area the agent is trusted to read"
+    tools: [read_file]
+    roots:
+      - "/home/user/**"
+
+  # 8. Email goes to colleagues only.
+  - id: email-domain-allow
+    type: email_domain_allow
+    decision: allow
+    reason: "colleagues at corp.example are the approved audience"
+    domains: ["corp.example"]
+
+  # 9. Every other recipient is refused.
+  - id: email-domain-deny
+    type: email_domain_deny
+    decision: block
+    reason: "outbound mail must not leave the corp.example domain"
+    domains: ["corp.example"]
+
+  # 10. A short list of destination hosts the agent may reach.
+  - id: http-domain-allow
+    type: http_domain_allow
+    decision: allow
+    reason: "example.com and the project docs are sanctioned destinations"
+    domains: ["example.com", "docs.python.org", "*.corp.example"]
+
+  # 11. Unknown hosts are not blocked outright - they need a person to say yes.
+  - id: http-domain-ask
+    type: http_domain_deny
+    decision: ask
+    reason: "unknown destination: a human must approve this request"
+    domains: ["example.com", "docs.python.org", "*.corp.example"]

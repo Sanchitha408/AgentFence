@@ -35,9 +35,14 @@ def _owasp_short(owasp: str) -> str:
 
 
 def build_report(
-    results: Sequence[AttackResult], agent: str = "sample"
+    results: Sequence[AttackResult],
+    agent: str = "sample",
+    policy: str | None = None,
 ) -> dict[str, Any]:
-    """Turn a list of results into the baseline report document."""
+    """Turn a list of results into the report document.
+
+    ``policy`` is the policy file that was enforced, or None for a baseline run.
+    """
     attacks = [result for result in results if not result.attack.control]
     controls = [result for result in results if result.attack.control]
 
@@ -70,6 +75,8 @@ def build_report(
 
     return {
         "agent": agent,
+        "policy": policy or "none (baseline)",
+        "enforced": policy is not None,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "environment": "offline / simulated sandbox, MockLLM (rule-based)",
         "summary": {
@@ -112,6 +119,8 @@ def format_table(report: dict[str, Any]) -> str:
     rule = "-" * max(len(header), 78)
 
     lines.append(f"Agent: {report['agent']}  |  {report['environment']}")
+    if report.get("enforced"):
+        lines.append(f"Policy: {report['policy']}")
     lines.append(rule)
     lines.append(header)
     lines.append(rule)

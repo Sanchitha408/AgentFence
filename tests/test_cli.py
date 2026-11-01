@@ -46,6 +46,39 @@ def test_single_attack_selection(tmp_path) -> None:
     assert [row["id"] for row in report["results"]] == ["direct-01"]
 
 
+def test_enforced_run_writes_report_and_audit(tmp_path) -> None:
+    out = tmp_path / "enforced.json"
+    audit = tmp_path / "audit.jsonl"
+    completed = run_cli(
+        "attack",
+        "--agent",
+        "sample",
+        "--enforce",
+        "policies/default.yaml",
+        "--out",
+        str(out),
+        "--audit",
+        str(audit),
+    )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "Policy: policies/default.yaml" in completed.stdout
+
+    report = json.loads(out.read_text(encoding="utf-8"))
+    assert report["enforced"] is True
+    assert report["summary"]["succeeded"] < report["summary"]["attacks"]
+    assert audit.exists() and audit.read_text(encoding="utf-8").strip()
+
+
+def test_missing_policy_is_reported(tmp_path) -> None:
+    completed = run_cli(
+        "attack", "--enforce", str(tmp_path / "nope.yaml"), "--no-write"
+    )
+
+    assert completed.returncode == 2
+    assert "cannot read policy" in completed.stderr
+
+
 def test_unknown_attack_id_is_rejected() -> None:
     completed = run_cli("attack", "--id", "nope", "--no-write")
 

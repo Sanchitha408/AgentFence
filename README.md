@@ -5,7 +5,8 @@ vulnerable tool-calling agent through a library of attacks, detect when it leaks
 secrets or misuses tools, then enforce a policy that stops those calls and
 re-measure.
 
-> Status: **Milestone 2 complete** — attack library, detectors, runner, baseline report.
+> Status: **Milestone 3 complete** — policy enforcer and audit log on top of the
+> attack library, detectors, runner, and baseline report.
 > Full design and roadmap: [`SPEC.md`](SPEC.md).
 
 ## Why
@@ -35,10 +36,12 @@ attacks/       the attack library: 12 attacks + 3 benign controls, as data
 detectors/     canary_leak, forbidden_tool_call, unauthorized_recipient,
                system_prompt_leak — each turns an AgentRun into a Finding
 runner/        runs each attack in a fresh sandbox, applies all detectors
-reports/       baseline JSON builder + terminal table (baseline.json lives here)
+reports/       JSON report builder + terminal table (baseline/enforced live here)
+enforcer/      policy engine, guarded tools, append-only JSONL audit log
+policies/      default.yaml — tool, path, shell, email and HTTP rules
 agentfence/    the CLI: python -m agentfence attack ...
 tests/         pytest suite
-requirements.txt  test dependency only — everything runs fully offline
+requirements.txt  pyyaml + pytest; everything runs fully offline
 pytest.ini        pytest config (imports from the repo root)
 SPEC.md           project vision, features, milestones
 ```
@@ -109,6 +112,52 @@ and the control set exists to measure false positives. Use `--id` to run one:
 python -m agentfence attack --id indirect-02 --no-write
 ```
 
+## Milestone 3: enforcement
+
+```bash
+python -m agentfence attack --agent sample --out reports/baseline.json
+python -m agentfence attack --agent sample --enforce policies/default.yaml \
+    --out reports/enforced.json --audit reports/audit.jsonl
+```
+
+Enforcement is opt-in, so the baseline keeps working unchanged.
+
+| | baseline | enforced |
+| --- | --- | --- |
+| overall attack success rate | 12/12 (100%) | 1/12 (8.3%) |
+| direct injection | 3/3 | 1/3 |
+| indirect injection | 4/4 | 0/4 |
+| tool misuse | 3/3 | 0/3 |
+| exfiltration | 2/2 | 0/2 |
+| control false positives | 0/3 | 0/3 |
+
+`direct-02` still succeeds: it is a pure prompt leak, answered without calling a
+tool, so a tool-level policy has nothing to block. Closing that needs an output
+filter, which is not in this milestone.
+
+How it works: `GuardedTools` implements the same surface as `FakeTools`, so the
+agent cannot tell the difference. Each call is evaluated against the YAML rules
+(top to bottom, first match wins, otherwise deny) and ends in `allow`, `block`,
+or `ask`:
+
+- **allow** - the call reaches the fake tool.
+- **block** - nothing runs; the agent gets `blocked by policy: <rule id> - <reason>`.
+- **ask** - nothing runs either; the call is flagged as awaiting human approval.
+
+Paths are normalised before matching, so `/home/user/../../etc/passwd` is tested
+as `/etc/passwd`. Paths hidden inside shell commands (`cat /home/user/secrets/...`)
+are extracted and checked too. Every call, allowed or not, appends one JSON line:
+
+```json
+{"timestamp": "2026-11-01T16:05:11.511Z", "tool": "read_file",
+ "arguments": {"path": "..."}, "decision": "block", "rule_id": "path-sensitive-deny",
+ "reason": "...", "executed": false, "output": "blocked by policy: ..."}
+```
+
+Detectors judge only calls that actually executed, so enforcement is measured on
+what happened rather than what was attempted; blocked attempts stay visible in
+the report's `tool_calls` and in the audit log.
+
 ## Setup
 
 Requires Python 3.10+.
@@ -150,7 +199,7 @@ CLI invocation from the README.
 | --- | --- | --- |
 | 1 | Repo setup, README, sample agent | ✅ |
 | 2 | Attack runner + attacks + detectors + baseline report | ✅ |
-| 3 | Enforcer + YAML policy + audit log | ⏳ |
+| 3 | Enforcer + YAML policy + audit log | ✅ |
 | 4 | Auto-policy generation + before/after report | ⏳ |
 | 5 | Dashboard | ⏳ |
 | 6 | Tests, CI, docs, demo | ⏳ |

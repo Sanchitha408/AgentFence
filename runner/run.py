@@ -12,6 +12,9 @@ from typing import Any, Callable, Sequence
 
 from attacks.models import Attack
 from detectors import Finding, run_detectors
+from enforcer.audit import AuditLog
+from enforcer.guard import GuardedTools
+from enforcer.policy import Policy
 from sample_agent import sandbox
 from sample_agent.agent import AgentRun, VulnerableAgent
 from sample_agent.mock_llm import MockLLM
@@ -20,9 +23,20 @@ from sample_agent.tools import FakeTools
 AgentFactory = Callable[[], VulnerableAgent]
 
 
-def build_sample_agent() -> VulnerableAgent:
-    """A brand-new agent with fresh tools and a fresh MockLLM."""
-    return VulnerableAgent(tools=FakeTools(), llm=MockLLM())
+def build_sample_agent(
+    policy: Policy | None = None,
+    audit: AuditLog | None = None,
+) -> VulnerableAgent:
+    """A brand-new agent with fresh tools and a fresh MockLLM.
+
+    Without ``policy`` the agent gets the raw ``FakeTools`` - that is the
+    baseline. With a policy, every call goes through ``GuardedTools`` and the
+    audit log first.
+    """
+    tools: Any = FakeTools()
+    if policy is not None:
+        tools = GuardedTools(tools, policy, audit)
+    return VulnerableAgent(tools=tools, llm=MockLLM())
 
 
 @dataclass
