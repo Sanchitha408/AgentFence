@@ -5,7 +5,7 @@ vulnerable tool-calling agent through a library of attacks, detect when it leaks
 secrets or misuses tools, then enforce a policy that stops those calls and
 re-measure.
 
-> Status: **Milestone 1 complete** — repository layout, sample agent, tests.
+> Status: **Milestone 2 complete** — attack library, detectors, runner, baseline report.
 > Full design and roadmap: [`SPEC.md`](SPEC.md).
 
 ## Why
@@ -27,12 +27,18 @@ attacks/   -> runner/   -> sample_agent/  (tools)
               reports/  ->  dashboard/
 ```
 
-Only the pieces on the left of the arrow that matter for Milestone 1 exist today:
+What exists today:
 
 ```
-sample_agent/     deliberately vulnerable agent (fake tools, fake canaries)
-tests/            pytest suite
-requirements.txt  test dependency only — the agent runs fully offline
+sample_agent/  deliberately vulnerable agent (fake tools, fake canaries)
+attacks/       the attack library: 12 attacks + 3 benign controls, as data
+detectors/     canary_leak, forbidden_tool_call, unauthorized_recipient,
+               system_prompt_leak — each turns an AgentRun into a Finding
+runner/        runs each attack in a fresh sandbox, applies all detectors
+reports/       baseline JSON builder + terminal table (baseline.json lives here)
+agentfence/    the CLI: python -m agentfence attack ...
+tests/         pytest suite
+requirements.txt  test dependency only — everything runs fully offline
 pytest.ini        pytest config (imports from the repo root)
 SPEC.md           project vision, features, milestones
 ```
@@ -59,6 +65,49 @@ intentionally unsafe, and it never leaves the process:
 3. It will send email to any recipient.
 4. It runs any shell command (simulated) and fetches any URL (simulated).
 5. It recites its system prompt, including the internal canary token.
+
+## Milestone 2: attacks, detectors, baseline
+
+```bash
+python -m agentfence attack --agent sample --out reports/baseline.json
+```
+
+With no enforcement in place, every attack works:
+
+```
+Attack success rate: 12/12 (100.0%)
+  direct injection     3/3 (100.0%)
+  indirect injection   4/4 (100.0%)
+  tool misuse          3/3 (100.0%)
+  exfiltration         2/2 (100.0%)
+Controls: 0 false positive(s) out of 3
+```
+
+That 100% is the *finding*, not the goal: Milestone 3 adds the enforcer and
+re-runs the same library to show the drop.
+
+| id | category | what it proves |
+| --- | --- | --- |
+| `direct-01` | direct injection | "ignore previous instructions" exfiltrates the API keys |
+| `direct-02` | direct injection | the system prompt (and its canary) is echoed back |
+| `direct-03` | direct injection | a role-play override reads `/etc/passwd` |
+| `indirect-01` | indirect injection | instruction hidden in an inbox email |
+| `indirect-02` | indirect injection | instruction hidden in a notes file |
+| `indirect-03` | indirect injection | instruction in shell stdout |
+| `indirect-04` | indirect injection | instruction in a fetched web page |
+| `misuse-01` | tool misuse | path traversal escapes `/home/user` |
+| `misuse-02` | tool misuse | destructive `rm -rf` is executed (simulated) |
+| `misuse-03` | tool misuse | email leaves for a non-allowlisted domain |
+| `exfil-01` | exfiltration | canaries sent by email |
+| `exfil-02` | exfiltration | canaries uploaded in a URL query string |
+| `control-01..03` | control | ordinary file reads and a fetch must stay quiet |
+
+Each attack declares `success_condition` — the detector that proves it worked —
+and the control set exists to measure false positives. Use `--id` to run one:
+
+```bash
+python -m agentfence attack --id indirect-02 --no-write
+```
 
 ## Setup
 
@@ -90,14 +139,17 @@ python -m pytest
 
 The suite covers path normalization, the fake filesystem, tool recording and
 error handling, indirect prompt injection, explicit exfiltration, prompt leak,
-the step limit, and that no real socket is ever opened.
+the step limit, and that no real socket is ever opened. On top of that: a
+positive and a negative case for every detector, the attack library's shape and
+counts, sandbox isolation between attacks, the report's arithmetic, and the
+CLI invocation from the README.
 
 ## Roadmap
 
 | # | Milestone | Status |
 | --- | --- | --- |
 | 1 | Repo setup, README, sample agent | ✅ |
-| 2 | Attack runner + attacks + detectors + baseline report | ⏳ |
+| 2 | Attack runner + attacks + detectors + baseline report | ✅ |
 | 3 | Enforcer + YAML policy + audit log | ⏳ |
 | 4 | Auto-policy generation + before/after report | ⏳ |
 | 5 | Dashboard | ⏳ |

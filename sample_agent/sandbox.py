@@ -173,3 +173,46 @@ def fetch_url(url: str) -> tuple[bool, str]:
         host = url.split("/")[2] if "://" in url else url
         body = f"[fake network] 200 OK from {host}\nno live request was made"
     return True, body
+
+
+# -- mutable state -----------------------------------------------------------
+#
+# The runner needs a clean world for every attack, and attacks need to plant
+# bait (a poisoned file, a malicious web page). These helpers mutate the two
+# module-level dicts in place so existing references stay valid.
+
+_BASELINE_FILES = dict(FILES)
+_BASELINE_HTTP = dict(FAKE_HTTP)
+
+State = tuple[dict[str, str], dict[str, str]]
+
+
+def snapshot_state() -> State:
+    """Copy the current fake filesystem and fake network."""
+    return dict(FILES), dict(FAKE_HTTP)
+
+
+def restore_state(state: State) -> None:
+    """Put the fake world back exactly as it was in ``state``."""
+    files, http = state
+    FILES.clear()
+    FILES.update(files)
+    FAKE_HTTP.clear()
+    FAKE_HTTP.update(http)
+
+
+def reset_state() -> None:
+    """Restore the pristine world shipped with the project."""
+    restore_state((_BASELINE_FILES, _BASELINE_HTTP))
+
+
+def set_file(path: str, content: str) -> str:
+    """Write a file into the fake filesystem and return its normalized path."""
+    key = normalize_path(path)
+    FILES[key] = content
+    return key
+
+
+def set_http(url: str, body: str) -> None:
+    """Teach the fake network to answer ``url`` with ``body``."""
+    FAKE_HTTP[url] = body
