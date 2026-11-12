@@ -1,8 +1,8 @@
 {
   "agent": "sample",
   "policy": "policies/generated.yaml",
-  "baseline_source": "reports/baseline.json",
-  "generated_at": "2026-11-12T13:02:55+00:00",
+  "baseline_source": "fresh in-process baseline",
+  "generated_at": "2026-11-12T14:47:02+00:00",
   "environment": "offline / simulated sandbox, MockLLM (rule-based)",
   "baseline_computed_ids": [],
   "summary": {

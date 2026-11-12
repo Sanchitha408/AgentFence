@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="675" viewBox="0 0 1200 675" role="img" aria-label="AgentFence dashboard screenshot placeholder">
+  <rect width="1200" height="675" fill="#0b1220" />
+  <rect x="24" y="24" width="210" height="627" rx="12" fill="#0f172a" stroke="#24324b" />
+  <rect x="48" y="52" width="36" height="36" rx="10" fill="#2dd4bf" />
+  <rect x="96" y="58" width="96" height="10" rx="5" fill="#334155" />
+  <rect x="96" y="76" width="66" height="8" rx="4" fill="#1e293b" />
+  <g fill="#1e293b">
+    <rect x="48" y="130" width="162" height="34" rx="8" />
+    <rect x="48" y="174" width="162" height="34" rx="8" />
+    <rect x="48" y="218" width="162" height="34" rx="8" />
+    <rect x="48" y="262" width="162" height="34" rx="8" />
+    <rect x="48" y="306" width="162" height="34" rx="8" />
+  </g>
+  <rect x="258" y="24" width="918" height="88" rx="12" fill="#111c31" stroke="#24324b" />
+  <rect x="286" y="48" width="220" height="16" rx="8" fill="#334155" />
+  <rect x="286" y="74" width="340" height="10" rx="5" fill="#1e293b" />
+  <rect x="1042" y="46" width="108" height="36" rx="9" fill="#14b8a6" />
+  <rect x="258" y="132" width="918" height="519" rx="12" fill="#111c31" stroke="#24324b" />
+  <g fill="#16233b" stroke="#24324b">
+    <rect x="286" y="164" width="270" height="112" rx="10" />
+    <rect x="572" y="164" width="270" height="112" rx="10" />
+    <rect x="858" y="164" width="290" height="112" rx="10" />
+  </g>
+  <g fill="#24324b">
+    <rect x="286" y="316" width="862" height="10" rx="5" />
+    <rect x="286" y="352" width="760" height="10" rx="5" />
+    <rect x="286" y="388" width="820" height="10" rx="5" />
+    <rect x="286" y="424" width="700" height="10" rx="5" />
+    <rect x="286" y="460" width="780" height="10" rx="5" />
+    <rect x="286" y="496" width="640" height="10" rx="5" />
+    <rect x="286" y="532" width="720" height="10" rx="5" />
+  </g>
+  <text x="600" y="608" fill="#93a3bc" font-family="system-ui, sans-serif" font-size="22" text-anchor="middle">AgentFence dashboard screenshot placeholder</text>
+  <text x="600" y="636" fill="#6f809b" font-family="system-ui, sans-serif" font-size="14" text-anchor="middle">Run the dashboard, then replace docs/screenshots/placeholder.svg</text>
+</svg>
