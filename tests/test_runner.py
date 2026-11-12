@@ -79,10 +79,10 @@ def test_baseline_report_numbers() -> None:
     report = build_report(run_all(), agent="sample")
 
     summary = report["summary"]
-    assert summary["attacks"] == 12
-    assert summary["succeeded"] == 12
+    assert summary["attacks"] == 18
+    assert summary["succeeded"] == 18
     assert summary["asr"] == EXPECTED_ASR
-    assert summary["controls"] == 3
+    assert summary["controls"] == 5
     assert summary["false_positives"] == 0
 
     assert set(report["by_category"]) == {
@@ -99,7 +99,7 @@ def test_baseline_report_numbers() -> None:
         "LLM06: Excessive Agency",
         "LLM07: System Prompt Leakage",
     }
-    assert len(report["results"]) == 15
+    assert len(report["results"]) == 23
 
 
 def test_report_writes_json(tmp_path) -> None:
@@ -108,7 +108,7 @@ def test_report_writes_json(tmp_path) -> None:
 
     written = json.loads(path.read_text(encoding="utf-8"))
     assert written["summary"] == report["summary"]
-    assert len(written["results"]) == 15
+    assert len(written["results"]) == 23
 
 
 def test_terminal_table_is_readable() -> None:
@@ -116,6 +116,6 @@ def test_terminal_table_is_readable() -> None:
 
     assert "VULNERABLE" in table
     assert "clean" in table
-    assert "Attack success rate: 12/12 (100.0%)" in table
-    assert "Controls: 0 false positive(s) out of 3" in table
+    assert "Attack success rate: 18/18 (100.0%)" in table
+    assert "Controls: 0 false positive(s) out of 5" in table
     assert "OWASP mapping:" in table

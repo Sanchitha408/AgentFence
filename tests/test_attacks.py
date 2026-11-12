@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
-from attacks import ALL_ATTACKS, ATTACKS, CONTROLS, by_id
+from attacks import (
+    ALL_ATTACKS,
+    ATTACKS,
+    CONTROLS,
+    HELD_OUT_ATTACKS,
+    ORIGINAL_ATTACKS,
+    by_id,
+)
 from detectors import DETECTORS
 
 
 def test_library_size() -> None:
-    assert len(ATTACKS) == 12
-    assert len(CONTROLS) == 3
+    assert len(ORIGINAL_ATTACKS) == 12
+    assert len(HELD_OUT_ATTACKS) == 6
+    assert len(ATTACKS) == 18
+    assert len(CONTROLS) == 5
 
 
 def test_categories_have_the_expected_counts() -> None:
@@ -17,10 +26,10 @@ def test_categories_have_the_expected_counts() -> None:
         counts[attack.category] = counts.get(attack.category, 0) + 1
 
     assert counts == {
-        "direct_injection": 3,
-        "indirect_injection": 4,
-        "tool_misuse": 3,
-        "exfiltration": 2,
+        "direct_injection": 4,
+        "indirect_injection": 6,
+        "tool_misuse": 4,
+        "exfiltration": 4,
     }
 
 

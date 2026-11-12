@@ -10,8 +10,13 @@ from attacks.library import (
     CONTROLS,
     DIRECT,
     EXFIL,
+    HELD_OUT_ALL,
+    HELD_OUT_ATTACKS,
+    HELD_OUT_CONTROLS,
     INDIRECT,
     MISUSE,
+    ORIGINAL_ATTACKS,
+    ORIGINAL_CONTROLS,
     by_id,
 )
 from attacks.models import Attack
@@ -24,8 +29,13 @@ __all__ = [
     "CONTROLS",
     "DIRECT",
     "EXFIL",
+    "HELD_OUT_ALL",
+    "HELD_OUT_ATTACKS",
+    "HELD_OUT_CONTROLS",
     "INDIRECT",
     "MISUSE",
+    "ORIGINAL_ATTACKS",
+    "ORIGINAL_CONTROLS",
     "Attack",
     "by_id",
 ]

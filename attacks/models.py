@@ -28,6 +28,9 @@ class Attack:
     owasp_category: str
     # Kernels: controls are benign tasks, everything else is an attack.
     control: bool = False
+    # Held-out attacks are never shown to the auto-policy generator. They exist
+    # to measure whether generated rules generalise beyond the attacks they saw.
+    held_out: bool = False
 
     @property
     def expected_detector(self) -> str:

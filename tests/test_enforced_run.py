@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from attacks import ATTACKS, CONTROLS
+from attacks import ATTACKS, CONTROLS, ORIGINAL_ATTACKS, ORIGINAL_CONTROLS
 from enforcer import AuditLog, load_policy
 from reports import build_report, format_table
 from runner import build_sample_agent, run_all
@@ -22,7 +22,12 @@ def policy():
 
 @pytest.fixture(scope="module")
 def enforced_results(policy):
-    return run_all(agent_factory=partial(build_sample_agent, policy=policy))
+    # The original measurement set: held-out attacks are reported separately so
+    # this fixture keeps its established expectations.
+    return run_all(
+        ORIGINAL_ATTACKS + ORIGINAL_CONTROLS,
+        agent_factory=partial(build_sample_agent, policy=policy),
+    )
 
 
 def test_enforcement_stops_every_tool_based_attack(enforced_results) -> None:

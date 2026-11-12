@@ -33,8 +33,10 @@ def test_attack_command_writes_a_baseline(tmp_path) -> None:
 
     report = json.loads(out.read_text(encoding="utf-8"))
     assert report["agent"] == "sample"
-    assert report["summary"]["attacks"] == 12
-    assert len(report["results"]) == 15
+    assert report["summary"]["attacks"] == 18
+    assert len(report["results"]) == 23
+    held_out = [row for row in report["results"] if row["held_out"]]
+    assert len(held_out) == 8  # 6 held-out attacks + 2 held-out controls
 
 
 def test_single_attack_selection(tmp_path) -> None:

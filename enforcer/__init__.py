@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from enforcer.audit import AuditLog
 from enforcer.guard import BLOCKED_PREFIX, GuardedTools
+from enforcer.output_guard import OUTPUT_CHECK
+from enforcer.output_guard import OutputGuard, ReplyCheck
 from enforcer.policy import (
     ALLOW,
     ASK,
@@ -25,7 +27,10 @@ __all__ = [
     "AuditLog",
     "Decision",
     "GuardedTools",
+    "OUTPUT_CHECK",
+    "OutputGuard",
     "Policy",
+    "ReplyCheck",
     "Rule",
     "load_policy",
     "paths_in_call",

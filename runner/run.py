@@ -12,8 +12,10 @@ from typing import Any, Callable, Sequence
 
 from attacks.models import Attack
 from detectors import Finding, run_detectors
+from detectors.base import executed_tool_calls
 from enforcer.audit import AuditLog
-from enforcer.guard import GuardedTools
+from enforcer.guard import BLOCKED_PREFIX, GuardedTools
+from enforcer.output_guard import OutputGuard, ReplyCheck
 from enforcer.policy import Policy
 from sample_agent import sandbox
 from sample_agent.agent import AgentRun, VulnerableAgent
@@ -47,6 +49,9 @@ class AttackResult:
     succeeded: bool
     findings: list[Finding] = field(default_factory=list)
     tool_calls: list[dict[str, Any]] = field(default_factory=list)
+    executed_calls: list[dict[str, Any]] = field(default_factory=list)
+    blocked_calls: list[dict[str, Any]] = field(default_factory=list)
+    reply_check: ReplyCheck | None = None
     final_answer: str = ""
     steps: int = 0
     stopped: str = "final_answer"
@@ -67,6 +72,7 @@ class AttackResult:
             "name": self.attack.name,
             "category": self.attack.category,
             "control": self.attack.control,
+            "held_out": self.attack.held_out,
             "owasp_category": self.attack.owasp_category,
             "payload": self.attack.payload,
             "success_condition": self.attack.success_condition,
@@ -76,21 +82,64 @@ class AttackResult:
             "steps": self.steps,
             "stopped": self.stopped,
             "tool_calls": self.tool_calls,
+            "executed_calls": self.executed_calls,
+            "blocked_calls": self.blocked_calls,
+            "reply_check": (
+                self.reply_check.to_dict()
+                if self.reply_check is not None
+                else {"checked": False, "blocked": False, "markers": [], "reason": ""}
+            ),
             "final_answer": self.final_answer,
             "findings": [finding.to_dict() for finding in self.findings],
         }
 
 
+def _blocked_calls(run: AgentRun) -> list[dict[str, Any]]:
+    """Tool calls the guard refused, with the rule id and reason it gave."""
+    pending: list[dict[str, Any]] = []
+    blocked: list[dict[str, Any]] = []
+    for message in run.transcript:
+        call = message.get("tool_call")
+        if call:
+            pending.append(call)
+            continue
+        if message.get("role") != "tool" or not pending:
+            continue
+        call = pending.pop(0)
+        content = str(message.get("content", ""))
+        if message.get("ok") is not False or not content.startswith(BLOCKED_PREFIX):
+            continue
+        rest = content[len(BLOCKED_PREFIX) :].strip()
+        rule_id, _, reason = rest.partition(" - ")
+        rule_id = rule_id.replace("(awaiting human approval)", "").strip()
+        blocked.append(
+            {
+                "tool": call.get("name", ""),
+                "arguments": call.get("arguments") or {},
+                "rule_id": rule_id,
+                "reason": reason.strip(),
+                "message": content,
+            }
+        )
+    return blocked
+
+
 def run_attack(
     attack: Attack,
     agent_factory: AgentFactory = build_sample_agent,
+    output_guard: OutputGuard | None = None,
 ) -> AttackResult:
-    """Run one attack in a throwaway sandbox and judge it."""
+    """Run one attack in a throwaway sandbox and judge it.
+
+    ``output_guard`` is the separate reply stage. It is optional so tool-policy
+    experiments can be run on their own; the CLI and ``compare`` pass one.
+    """
     state = sandbox.snapshot_state()
     try:
         if attack.setup is not None:
             attack.setup()
         run: AgentRun = agent_factory().run(attack.payload)
+        reply_check = output_guard.inspect(run) if output_guard is not None else None
         findings = run_detectors(run)
     finally:
         sandbox.restore_state(state)
@@ -108,6 +157,9 @@ def run_attack(
         succeeded=succeeded,
         findings=findings,
         tool_calls=run.tool_calls(),
+        executed_calls=executed_tool_calls(run),
+        blocked_calls=_blocked_calls(run),
+        reply_check=reply_check,
         final_answer=run.final_answer,
         steps=run.steps,
         stopped=run.stopped,
@@ -117,10 +169,14 @@ def run_attack(
 def run_all(
     attacks: Sequence[Attack] | None = None,
     agent_factory: AgentFactory = build_sample_agent,
+    output_guard: OutputGuard | None = None,
 ) -> list[AttackResult]:
     """Run a list of attacks in order. Defaults to the whole library."""
     if attacks is None:
         from attacks import ALL_ATTACKS
 
         attacks = ALL_ATTACKS
-    return [run_attack(attack, agent_factory=agent_factory) for attack in attacks]
+    return [
+        run_attack(attack, agent_factory=agent_factory, output_guard=output_guard)
+        for attack in attacks
+    ]
