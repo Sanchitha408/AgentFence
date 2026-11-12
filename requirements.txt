@@ -4,5 +4,10 @@
 # Policy files (Milestone 3)
 pyyaml>=6.0
 
+# Dashboard API (Milestone 5)
+fastapi>=0.110
+uvicorn>=0.29
+httpx>=0.27
+
 # Testing
 pytest>=8.0
