@@ -8,6 +8,8 @@ from attacks import (
     CONTROLS,
     HELD_OUT_ATTACKS,
     ORIGINAL_ATTACKS,
+    V2_CONTROLS,
+    V2_HOLDOUT_ATTACKS,
     by_id,
 )
 from detectors import DETECTORS
@@ -16,8 +18,10 @@ from detectors import DETECTORS
 def test_library_size() -> None:
     assert len(ORIGINAL_ATTACKS) == 12
     assert len(HELD_OUT_ATTACKS) == 6
-    assert len(ATTACKS) == 18
-    assert len(CONTROLS) == 5
+    assert len(V2_HOLDOUT_ATTACKS) == 4
+    assert len(ATTACKS) == 22
+    assert len(CONTROLS) == 6
+    assert len(V2_CONTROLS) == 1
 
 
 def test_categories_have_the_expected_counts() -> None:
@@ -28,8 +32,8 @@ def test_categories_have_the_expected_counts() -> None:
     assert counts == {
         "direct_injection": 4,
         "indirect_injection": 6,
-        "tool_misuse": 4,
-        "exfiltration": 4,
+        "tool_misuse": 5,
+        "exfiltration": 7,
     }
 
 
@@ -44,6 +48,18 @@ def test_success_conditions_point_at_real_detectors() -> None:
     for control in CONTROLS:
         assert control.success_condition == ""
         assert control.control is True
+
+
+def test_v2_cohort_is_tagged_and_every_category_is_covered() -> None:
+    for attack in V2_HOLDOUT_ATTACKS:
+        assert attack.held_out_v2 is True
+        assert attack.held_out is False
+        assert attack.control is False
+    categories = {attack.category for attack in V2_HOLDOUT_ATTACKS}
+    assert categories == {"tool_misuse", "exfiltration"}
+    for control in V2_CONTROLS:
+        assert control.control is True
+        assert control.held_out_v2 is True
 
 
 def test_every_attack_is_fully_described() -> None:

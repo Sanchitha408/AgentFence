@@ -48,6 +48,24 @@ export function attackOutcome(row) {
     : '<span class="pill pill-ok">Blocked</span>';
 }
 
+/**
+ * A stage outcome that separates "blocked" from "the detector saw nothing".
+ * Baseline rows have no policy, and an encoded or split leak can be allowed
+ * through without tripping a detector; calling that "Blocked" would be a lie.
+ */
+export function stageOutcome({ succeeded, control, blockedBy, replyBlocked }) {
+  if (control) {
+    return succeeded
+      ? '<span class="pill pill-danger">False positive</span>'
+      : '<span class="pill pill-ok">Clean</span>';
+  }
+  if (succeeded) return '<span class="pill pill-danger">Vulnerable</span>';
+  if ((blockedBy && blockedBy.length) || replyBlocked) {
+    return '<span class="pill pill-ok">Blocked</span>';
+  }
+  return '<span class="pill pill-warn">Not detected</span>';
+}
+
 const CATEGORY_LABELS = {
   direct_injection: "Direct injection",
   indirect_injection: "Indirect injection",
@@ -60,8 +78,11 @@ export function categoryLabel(category) {
   return CATEGORY_LABELS[category] || category || "—";
 }
 
-export function cohortPill(heldOut) {
-  return heldOut
+export function cohortPill(cohort) {
+  if (cohort === "held_out_v2") {
+    return '<span class="pill pill-warn">Held-out v2</span>';
+  }
+  return cohort === "held_out"
     ? '<span class="pill pill-warn">Held-out</span>'
     : '<span class="pill pill-neutral">Original</span>';
 }

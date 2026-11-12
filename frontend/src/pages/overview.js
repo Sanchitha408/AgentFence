@@ -38,6 +38,66 @@ function metric(label, value, detail, tone) {
   </article>`;
 }
 
+function v2Progression(comparison, v2) {
+  const base = comparison.summary || {};
+  const controls = v2.controls || {};
+  const rows = [
+    {
+      label: "Overall",
+      v1: base.after,
+      v2: v2.summary?.after,
+    },
+    ...Object.entries(v2.cohorts || {}).map(([key, cell]) => ({
+      label: cell.label || key,
+      v1: comparison.cohorts?.[key]?.after,
+      v2: cell.after,
+    })),
+  ];
+
+  const body = rows
+    .map(
+      (row) => `<tr>
+        <td>${esc(row.label)}</td>
+        <td class="tone-red">${esc(rate(row.v1))}</td>
+        <td class="tone-green">${esc(rate(row.v2))}</td>
+      </tr>`,
+    )
+    .join("");
+
+  const still = v2.still_succeeding || [];
+  const unresolved = v2.unresolved || [];
+  return `<section class="card">
+    <div class="card-title">
+      <div>
+        <h2>v1 → v2</h2>
+        <p>Argument-level data-loss scanning on top of the v1 tool policy</p>
+      </div>
+      <span class="pill pill-neutral">${esc(v2.policy || "v2")}</span>
+    </div>
+    <table>
+      <thead><tr><th>Attack set</th><th>v1</th><th>v2</th></tr></thead>
+      <tbody>${body}</tbody>
+    </table>
+    <div class="grid grid-two" style="margin-top: 18px">
+      <div>
+        <h3 style="font-size: 0.95rem; margin: 0 0 6px">Control false positives</h3>
+        <p class="faint" style="margin: 0">
+          v1 ${esc(`${controls.before?.false_positives ?? 0}/${controls.before?.controls ?? 0}`)}
+          → v2 ${esc(`${controls.after?.false_positives ?? 0}/${controls.after?.controls ?? 0}`)}
+          · benign calls blocked by v2 ${esc(controls.after?.blocked_calls ?? 0)}
+        </p>
+      </div>
+      <div>
+        <h3 style="font-size: 0.95rem; margin: 0 0 6px">Still succeeding under v2</h3>
+        <p class="faint" style="margin: 0">
+          ${still.length ? still.map((row) => `<span class="mono">${esc(row.id)}</span>`).join(", ") : "None detected by the current detectors."}
+          ${unresolved.length ? `<br />Not blocked and not detected: ${unresolved.map((row) => `<span class="mono">${esc(row.id)}</span>`).join(", ")}` : ""}
+        </p>
+      </div>
+    </div>
+  </section>`;
+}
+
 export function render(state) {
   const comparison = state.compare;
   if (!comparison) return comparisonMissing(state);
@@ -47,6 +107,8 @@ export function render(state) {
   const controls = comparison.controls || {};
   const original = cohorts.original || {};
   const held = cohorts.held_out || {};
+  const heldV2 = cohorts.held_out_v2 || {};
+  const v2 = comparison.v2 || null;
   const after = summary.after || {};
   const before = summary.before || {};
 
@@ -64,11 +126,21 @@ export function render(state) {
       after: original.after,
     },
     {
-      label: "Held-out 6",
+      label: `Held-out ${held.before?.attacks ?? 0}`,
       attacks: held.before?.attacks ?? 0,
       before: held.before,
       after: held.after,
     },
+    ...(heldV2.before
+      ? [
+          {
+            label: `Held-out v2 ${heldV2.before.attacks}`,
+            attacks: heldV2.before.attacks,
+            before: heldV2.before,
+            after: heldV2.after,
+          },
+        ]
+      : []),
   ];
 
   const categoryGroups = Object.entries(comparison.by_category || {}).map(
@@ -89,13 +161,17 @@ export function render(state) {
   const stillCallout = still.length
     ? `<div class="callout callout-danger">
         <div>
-          <strong>${still.length} attack${still.length === 1 ? "" : "s"} still succeed after enforcement</strong>
+          <strong>${still.length} attack${still.length === 1 ? "" : "s"} still succeed after v1 enforcement</strong>
           <p>${still
             .slice(0, 2)
             .map(
               (row) =>
                 `<span class="mono">${esc(row.id)}</span> (${esc(
-                  row.cohort === "held_out" ? "held-out" : "original",
+                  row.cohort === "held_out_v2"
+                    ? "held-out v2"
+                    : row.cohort === "held_out"
+                      ? "held-out"
+                      : "original",
                 )})`,
             )
             .join(", ")} — open Compare for the evidence and the reason.</p>
@@ -118,11 +194,17 @@ export function render(state) {
         "tone-red",
       )}
       ${metric(
-        "After enforcement",
+        "After v1 enforcement",
         pct(after.asr),
         `${after.succeeded ?? 0}/${after.attacks ?? 0} attacks succeeded`,
         "tone-green",
       )}
+      ${v2 ? metric(
+        "After v2 enforcement",
+        pct(v2.summary?.after?.asr),
+        `${v2.summary?.after?.succeeded ?? 0}/${v2.summary?.after?.attacks ?? 0} attacks · data-loss stage on`,
+        "tone-green",
+      ) : ""}
       ${metric("Attacks fixed", fixed, "baseline failures now blocked", "tone-green")}
       ${metric(
         "Still succeeding",
@@ -140,6 +222,8 @@ export function render(state) {
     </section>
 
     ${stillCallout}
+
+    ${v2 ? v2Progression(comparison, v2) : ""}
 
     <section class="card">
       <div class="card-title">
@@ -185,6 +269,11 @@ export function render(state) {
               <td class="tone-red">${esc(rate(held.before))}</td>
               <td class="tone-green">${esc(rate(held.after))}</td>
             </tr>
+            ${heldV2.before ? `<tr>
+              <td>Held-out v2 attacks<br /><span class="faint">new channels, never used to tune v2</span></td>
+              <td class="tone-red">${esc(rate(heldV2.before))}</td>
+              <td class="tone-green">${esc(rate(heldV2.after))}</td>
+            </tr>` : ""}
           </tbody>
         </table>
         <p class="metric-detail" style="margin-top: 14px">

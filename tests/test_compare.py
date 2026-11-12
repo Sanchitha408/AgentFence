@@ -13,6 +13,8 @@ from autopolicy import generate_policy
 from reports import build_report, write_json
 from runner import run_all
 
+POLICY_V2 = Path(__file__).resolve().parents[1] / "policies" / "v2.yaml"
+
 
 @pytest.fixture(scope="module")
 def baseline_path(tmp_path_factory: pytest.TempPathFactory) -> Path:
@@ -56,10 +58,11 @@ def test_compare_command_writes_json_and_html(
     assert "still succeeding" in printed.lower()
 
     report = json.loads(out.read_text(encoding="utf-8"))
-    assert report["summary"]["before"]["attacks"] == 18
-    assert report["summary"]["after"]["attacks"] == 18
+    assert report["summary"]["before"]["attacks"] == 22
+    assert report["summary"]["after"]["attacks"] == 22
     assert report["cohorts"]["original"]["before"]["attacks"] == 12
     assert report["cohorts"]["held_out"]["before"]["attacks"] == 6
+    assert report["cohorts"]["held_out_v2"]["before"]["attacks"] == 4
     assert report["controls"]["after"]["false_positives"] == 0
 
     # direct-02 never touches a tool; the separate reply stage is why it is fixed.
@@ -140,7 +143,64 @@ def test_compare_fills_in_attacks_missing_from_an_old_baseline(
     report = json.loads(out.read_text(encoding="utf-8"))
     assert report["baseline_computed_ids"]
     assert report["cohorts"]["held_out"]["before"]["attacks"] == 6
-    assert report["summary"]["before"]["attacks"] == 18
+    assert report["cohorts"]["held_out_v2"]["before"]["attacks"] == 4
+    assert report["summary"]["before"]["attacks"] == 22
+
+
+def test_compare_with_v2_reports_the_progression(
+    baseline_path: Path, policy_path: Path, tmp_path: Path, capsys
+) -> None:
+    out = tmp_path / "compare-v2.json"
+    html_path = tmp_path / "compare-v2.html"
+    assert (
+        main(
+            [
+                "compare",
+                "--baseline",
+                str(baseline_path),
+                "--policy",
+                str(policy_path),
+                "--policy-v2",
+                str(POLICY_V2),
+                "--out",
+                str(out),
+                "--html",
+                str(html_path),
+            ]
+        )
+        == 0
+    )
+    printed = capsys.readouterr().out
+    assert "v1 vs v2" in printed
+
+    report = json.loads(out.read_text(encoding="utf-8"))
+    v2 = report["v2"]
+    assert v2["policy"].endswith("policies/v2.yaml")
+    assert v2["cohorts"]["held_out_v2"]["before"]["attacks"] == 4
+    assert v2["controls"]["after"]["false_positives"] == 0
+    assert set(v2["new_attack_ids"]) == {
+        "held-v2-url-01",
+        "held-v2-shell-01",
+        "held-v2-base64-01",
+        "held-v2-split-01",
+    }
+    assert v2["blocked_by"].get("arg-data-loss", 0) >= 3
+
+    rows = {row["id"]: row for row in v2["attacks"]}
+    # The gap that motivated v2 is closed: an allowed host no longer accepts a
+    # protected secret in the query string.
+    assert rows["held-indirect-02"]["v1_succeeded"] is True
+    assert rows["held-indirect-02"]["v2_blocked_by"] == ["arg-data-loss"]
+    # Both the URL-path and the encoded email body are caught by the stage.
+    assert rows["held-v2-url-01"]["v2_blocked_by"] == ["arg-data-loss"]
+    assert rows["held-v2-base64-01"]["v2_blocked_by"] == ["arg-data-loss"]
+    # The split attack is below the fragment threshold: reported, not hidden.
+    assert rows["held-v2-split-01"]["v2_blocked"] is False
+
+    document = html_path.read_text(encoding="utf-8")
+    assert "v1 → v2" in document
+    assert "<script" not in document
+    assert "cdn." not in document
 
 
 def test_compare_rejects_a_bad_baseline(tmp_path: Path, policy_path: Path) -> None:

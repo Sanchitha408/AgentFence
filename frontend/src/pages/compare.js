@@ -1,7 +1,6 @@
 /** Compare: baseline vs enforced side by side, with still-succeeding callouts. */
 
 import {
-  attackOutcome,
   byId,
   categoryLabel,
   chips,
@@ -9,6 +8,7 @@ import {
   emptyPanel,
   esc,
   pct,
+  stageOutcome,
 } from "../utils/format.js";
 
 function missing(state) {
@@ -44,6 +44,8 @@ export function render(state) {
   const afterMap = byId(afterRows);
   const fixedMap = byId(comparison.fixed || []);
   const stillMap = byId(comparison.still_succeeding || []);
+  const v2 = comparison.v2 || null;
+  const v2Map = byId(v2?.attacks || []);
 
   const ids = [
     ...new Set([
@@ -65,6 +67,13 @@ export function render(state) {
     .map(({ id, before, after, sample }) => {
       const still = stillMap.get(id);
       const fixed = fixedMap.get(id);
+      const v2Row = v2Map.get(id);
+      const v2Fails = Boolean(
+        v2Row &&
+          !v2Row.control &&
+          (v2Row.v2_succeeded || !(v2Row.v2_blocked_by || []).length),
+      );
+      const highlight = v2 ? v2Fails : Boolean(still);
       const blockedBy =
         fixed?.blocked_by ||
         [
@@ -74,30 +83,69 @@ export function render(state) {
               .filter(Boolean),
           ),
         ];
+      const cohort = v2Row
+        ? v2Row.cohort === "held_out_v2"
+          ? "held_out_v2"
+          : v2Row.cohort
+        : sample.held_out
+          ? "held_out"
+          : "original";
 
-      const rowClass = still ? "row-danger" : "";
+      const stage = (row) =>
+        stageOutcome({
+          succeeded: row?.succeeded ?? false,
+          control: row?.control ?? false,
+          blockedBy: (row?.blocked_calls || [])
+            .map((call) => call.rule_id)
+            .filter(Boolean),
+          replyBlocked: row?.reply_check?.blocked,
+        });
+      const v2Outcome = v2Row
+        ? stageOutcome({
+            succeeded: v2Row.v2_succeeded,
+            control: v2Row.control,
+            blockedBy: v2Row.v2_blocked_by,
+          })
+        : '<span class="faint">—</span>';
+
+      const rowClass = highlight ? "row-danger" : "";
       const mainRow = `<tr class="${rowClass}">
         <td>
           <span class="attack-name">${esc(sample.name)}</span>
           <span class="attack-id">${esc(id)}</span>
         </td>
         <td>${esc(categoryLabel(sample.category))}</td>
-        <td>${cohortPill(sample.held_out ?? false)}</td>
-        <td>${attackOutcome(before)}</td>
-        <td>${attackOutcome(after)}</td>
+        <td>${cohortPill(cohort)}</td>
+        <td>${stage(before)}</td>
+        <td>${stage(after)}</td>
+        ${v2 ? `<td>${v2Outcome}</td>` : ""}
         <td>${
-          still
-            ? '<span class="pill pill-danger">Still succeeds</span>'
-            : chips(blockedBy, "no blocking rule recorded")
+          v2
+            ? v2Row?.v2_succeeded
+              ? '<span class="pill pill-danger">Still succeeds</span>'
+              : chips(
+                  v2Row?.v2_blocked_by,
+                  v2Row?.control ? "not blocked" : "not blocked — leak",
+                )
+            : still
+              ? '<span class="pill pill-danger">Still succeeds</span>'
+              : chips(blockedBy, "no blocking rule recorded")
         }</td>
       </tr>`;
 
-      const why = still
-        ? `<tr class="why-row"><td colspan="6">
+      const whyText = v2
+        ? v2Fails
+          ? v2Row.note
+          : null
+        : still
+          ? still.reason
+          : null;
+      const why = whyText
+        ? `<tr class="why-row"><td colspan="${v2 ? 7 : 6}">
             <div class="why-text"><strong>Why it still succeeds:</strong> ${esc(
-              still.reason,
+              whyText,
             )}${
-              still.evidence?.length
+              !v2 && still?.evidence?.length
                 ? ` <span class="faint">Evidence: ${esc(
                     still.evidence.join("; "),
                   )}</span>`
@@ -111,8 +159,12 @@ export function render(state) {
     .join("");
 
   const summary = comparison.summary || {};
-  const stillCount = (comparison.still_succeeding || []).length;
-  const fixedCount = summary.attacks_fixed ?? (comparison.fixed || []).length;
+  const stillCount = v2
+    ? (v2.still_succeeding || []).length
+    : (comparison.still_succeeding || []).length;
+  const fixedCount = v2
+    ? v2.summary?.attacks_fixed ?? (v2.fixed || []).length
+    : summary.attacks_fixed ?? (comparison.fixed || []).length;
   const regressions = (comparison.regressions || []).length;
 
   return `<div class="stack">
@@ -124,11 +176,17 @@ export function render(state) {
         "tone-red",
       )}
       ${metric(
-        "Enforced success rate",
+        "v1 enforced success rate",
         pct(summary.after?.asr),
         `${summary.after?.succeeded ?? 0}/${summary.after?.attacks ?? 0} attacks`,
         "tone-green",
       )}
+      ${v2 ? metric(
+        "v2 enforced success rate",
+        pct(v2.summary?.after?.asr),
+        `${v2.summary?.after?.succeeded ?? 0}/${v2.summary?.after?.attacks ?? 0} attacks · data-loss stage on`,
+        "tone-green",
+      ) : ""}
       ${metric("Fixed", fixedCount, "attacks no longer succeed", "tone-green")}
       ${metric("Still succeeding", stillCount, "highlighted below", stillCount ? "tone-red" : "")}
       ${metric("Regressions", regressions, "newly successful attacks", regressions ? "tone-amber" : "")}
@@ -142,8 +200,9 @@ export function render(state) {
             <th>Category</th>
             <th>Set</th>
             <th>Baseline</th>
-            <th>Enforced</th>
-            <th>Blocked by / result</th>
+            <th>v1 enforced</th>
+            ${v2 ? "<th>v2 enforced</th>" : ""}
+            <th>${v2 ? "v2 blocked by / result" : "Blocked by / result"}</th>
           </tr>
         </thead>
         <tbody>${body}</tbody>
@@ -151,9 +210,9 @@ export function render(state) {
     </div>
 
     <p class="faint">
-      Baseline and enforced outcomes come from the same attack in the same
-      simulated sandbox. Rows in red still succeed and include the recorded
-      reason.
+      Baseline, v1 and v2 outcomes come from the same attack in the same
+      simulated sandbox. Rows in red still succeed under the last enforced
+      stage and include the recorded reason.
     </p>
   </div>`;
 }

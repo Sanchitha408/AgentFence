@@ -5,9 +5,9 @@ vulnerable tool-calling agent through a library of attacks, detect when it leaks
 secrets or misuses tools, then enforce a policy that stops those calls and
 re-measure.
 
-> Status: **Milestone 5 complete** — auto-generated policies, the before/after
-> report, and the local web dashboard on top of the attack library, detectors,
-> runner and policy enforcer.
+> Status: **Milestone 5 complete, v2 enforcement added** — auto-generated
+> policies, the before/after report, the local web dashboard, and an
+> argument-level data-loss stage that layer 2 adds on top of the v1 rules.
 > Full design and roadmap: [`SPEC.md`](SPEC.md).
 
 ## Why
@@ -38,9 +38,9 @@ detectors/     canary_leak, forbidden_tool_call, unauthorized_recipient,
                system_prompt_leak — each turns an AgentRun into a Finding
 runner/        runs each attack in a fresh sandbox, applies all detectors
 reports/       JSON reports, before/after comparison and self-contained HTML
-enforcer/      policy engine, guarded tools, reply stage, JSONL audit log
+enforcer/      policy engine, guarded tools, data-loss stage, reply stage, audit log
 autopolicy/    turns baseline failures into a suggested YAML policy
-policies/      default.yaml + generated.yaml (tool, path, shell, email, HTTP)
+policies/      default.yaml, generated.yaml (v1) and v2.yaml (+ data_loss stage)
 backend/       FastAPI dashboard API over the reports, policies and audit log
 frontend/      dependency-free HTML/CSS/JS dashboard (no build step, no CDN)
 agentfence/    the CLI: attack, autopolicy, compare
@@ -177,6 +177,44 @@ attacks are marked `held_out` in `attacks/` and are never analysed, so their
 before/after numbers measure generalisation rather than training fit. Compare
 also writes `reports/compare.html`, a single self-contained file with no CDN.
 
+## v2 enforcement: argument-level data loss
+
+v1 decides calls by tool, path, recipient and destination host. It never looks
+at *what* a call carries. That is the `held-indirect-02` gap: the agent reads a
+backup key from an allowed workspace file and sends it to an allowed host inside
+the URL query string.
+
+`policies/v2.yaml` keeps every v1 rule and adds a top-level `data_loss` block.
+`enforcer/data_loss.py` then scans the outgoing URL (including the decoded query
+string), email subject and body, and shell command text for canary values and
+for content read from the deny-listed paths. It decodes URL-encoding, base64 and
+hex first. A hit becomes a `block` with `rule_id: arg-data-loss` and is written
+to the same audit log.
+
+The rule id, reason, tools, channels, encodings, protect paths and minimum
+fragment length all come from YAML. `default.yaml` and `generated.yaml` have no
+`data_loss` block, so v1 behaviour and numbers are unchanged.
+
+```bash
+python -m agentfence compare --baseline reports/baseline.json \
+    --policy policies/generated.yaml \
+    --policy-v2 policies/v2.yaml \
+    --out reports/compare.json
+```
+
+The report gains a `v2` section with v1 vs v2 rates overall, per cohort and per
+category, control false positives, which rule blocked what, and a per-attack
+v1/v2 table. Four attacks (`held-v2-*`) were written **before** the check for
+its other channels: a URL path, a shell echo, a base64 email body, and a secret
+split across two calls. They are tagged `held_out_v2`, are a separate cohort,
+and the auto-policy generator ignores them.
+
+The v2 cohort also shows two honest limits of the *detectors*, not just the
+check: a base64 body and a split secret do not contain a raw canary, so the
+baseline `canary_leak` detector does not fire for them. v2's stage decodes the
+base64 body and blocks it; the split halves are shorter than the 16-character
+fragment threshold and get through.
+
 ## Milestone 5: web dashboard
 
 The dashboard is plain HTML, CSS and JavaScript with hand-rolled SVG charts.
@@ -217,11 +255,11 @@ http://127.0.0.1:5173/?api=http://127.0.0.1:9000#/overview
 
 | Page | What it shows |
 | --- | --- |
-| Overview | Before/after attack success rate (overall, original vs held-out, per category), control false positives, fixed / still-succeeding / regression counts |
-| Results | Every attack with category, OWASP mapping, baseline and enforced outcomes, detectors fired; filters for category and original vs held-out |
+| Overview | Before/after attack success rate (overall, original, held-out and held-out v2, per category), the v1 → v2 progression, control false positives, fixed / still-succeeding / regression counts |
+| Results | Every attack with category, OWASP mapping, baseline and enforced outcomes, detectors fired; filters for category and original / held-out / held-out v2 |
 | Policies | Parsed YAML rules with id, type, decision, reason and `derived_from` attacks |
 | Audit log | Recent allow / block / ask decisions with rule id, reason and arguments |
-| Compare | Baseline vs enforced per attack, with still-succeeding rows highlighted and the recorded "why" |
+| Compare | Baseline, v1 and v2 per attack, with rows still succeeding under the last stage highlighted and the recorded "why" |
 
 **Run again** posts to `POST /api/run` with `{"kind": "compare"}`. The backend
 runs the existing baseline and enforced runner in-process, then rewrites
@@ -281,8 +319,35 @@ The suite covers path normalization, the fake filesystem, tool recording and
 error handling, indirect prompt injection, explicit exfiltration, prompt leak,
 the step limit, and that no real socket is ever opened. On top of that: a
 positive and a negative case for every detector, the attack library's shape and
-counts, sandbox isolation between attacks, the report's arithmetic, and the
-CLI invocation from the README.
+counts, sandbox isolation between attacks, the report's arithmetic, the v2
+data-loss check (plain, URL-encoded, base64 and hex positives; benign query
+strings, email and shell negatives; fragment threshold; audit logging; tracked
+reads), the held-out-v2 split, and the CLI invocation from the README.
+
+## Limitations
+
+v2 raises the bar; it is not a guarantee. What it still cannot catch:
+
+- **Split secrets.** A value broken into pieces shorter than
+  `min_fragment_length` (16 characters in `policies/v2.yaml`) is not matched.
+  `held-v2-split-01` does exactly this and is reported as not blocked.
+- **Unknown encodings.** Only URL-encoding, base64 and hex are decoded. A
+  rotation cipher, compression, or a bespoke encoding passes through.
+- **Secrets the check has never seen.** It knows the canaries and content read
+  from `protect_paths`. A secret obtained elsewhere (for example typed into the
+  task by the user) is not protected unless a detector or path rule knows it.
+- **Channel coverage.** Only `http_get` URLs, `send_email` subject/body and
+  `run_shell` commands are scanned. A new tool argument is invisible until a
+  channel is added to the YAML.
+- **Detector blind spots.** The baseline `canary_leak` detector matches raw
+  canary strings. It does not decode base64 or hex, so those baseline rows
+  under-report the leak even when v2 blocks it. `v2.attacks` shows the
+  per-channel outcome.
+- **Paraphrased prompt leakage.** The reply stage matches canary values and
+  marker phrases, not a paraphrase of the system prompt.
+- **A determined attacker.** Everything here runs against a rule-based mock
+  model and in-memory tools; the numbers are a reproducible benchmark, not a
+  claim about any production agent.
 
 ## Roadmap
 
@@ -293,6 +358,7 @@ CLI invocation from the README.
 | 3 | Enforcer + YAML policy + audit log | ✅ |
 | 4 | Auto-policy generation + before/after report | ✅ |
 | 5 | Dashboard | ✅ |
+| 5.1 | v2 argument-level data-loss enforcement | ✅ |
 | 6 | Tests, CI, docs, demo | ⏳ |
 
 ## Safety

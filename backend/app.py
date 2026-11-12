@@ -337,12 +337,33 @@ def create_app(
                 assert policy_path is not None
                 before = run_baseline()
                 after = run_enforced(policy_path)
+
+                # When a v2 policy ships alongside v1, run it too so the
+                # dashboard can show the v1 -> v2 progression.
+                v2_path = policies / "v2.yaml"
+                v2_rows = None
+                v2_label = ""
+                if v2_path.is_file() and v2_path.resolve() != policy_path.resolve():
+                    v2_policy = load_policy(v2_path)
+                    v2_audit = AuditLog(reports / "audit.jsonl")
+                    v2_results = run_all(
+                        ALL_ATTACKS,
+                        agent_factory=partial(
+                            build_sample_agent, policy=v2_policy, audit=v2_audit
+                        ),
+                        output_guard=OutputGuard(audit=v2_audit),
+                    )
+                    v2_rows = [result.to_dict() for result in v2_results]
+                    v2_label = _display_path(v2_path)
+
                 report = build_comparison(
                     before["results"],
                     after["results"],
                     policy=_display_path(policy_path),
                     baseline_source="fresh in-process baseline",
                     agent="sample",
+                    v2_rows=v2_rows,
+                    v2_policy=v2_label,
                 )
                 json_path = write_json(report, reports / "compare.json")
                 html_path = write_html(report, reports / "compare.html")

@@ -16,7 +16,8 @@ from dataclasses import dataclass, field
 from typing import Any, Mapping
 
 from enforcer.audit import AuditLog
-from enforcer.policy import ASK, Decision, Policy
+from enforcer.data_loss import ProtectedContent
+from enforcer.policy import ASK, BLOCK, Decision, Policy
 from sample_agent.tools import FakeTools, ToolResult
 
 BLOCKED_PREFIX = "blocked by policy:"
@@ -31,17 +32,31 @@ class GuardedTools:
     audit: AuditLog | None = None
     # Decisions in the order they were made, handy for assertions and tests.
     decisions: list[Decision] = field(default_factory=list)
+    # Canaries plus anything read from a deny-listed path, for the v2 stage.
+    protected: ProtectedContent = field(default_factory=ProtectedContent)
 
     # -- the guarded entry point ---------------------------------------------
 
     def call(self, name: str, arguments: Mapping[str, Any] | None = None) -> ToolResult:
         arguments = dict(arguments or {})
         decision = self.policy.evaluate(name, arguments)
+
+        # v2: an allowed call still must not carry protected content out. This
+        # runs after the rule engine, so an existing block keeps its own rule id.
+        if decision.allowed and self.policy.data_loss is not None:
+            hit = self.policy.data_loss.scan(name, arguments, self.protected)
+            if hit is not None:
+                decision = Decision(BLOCK, hit.rule_id, hit.reason)
+
         self.decisions.append(decision)
         executed = decision.decision != ASK and decision.allowed
 
         if executed:
             result = self.inner.call(name, arguments)
+            if self.policy.data_loss is not None:
+                self.policy.data_loss.absorb(
+                    self.protected, name, arguments, result.output
+                )
         else:
             result = ToolResult(name, arguments, False, self._refusal(decision))
 
@@ -77,6 +92,7 @@ class GuardedTools:
     def reset(self) -> None:
         self.inner.reset()
         self.decisions.clear()
+        self.protected.reset()
 
     @property
     def calls(self) -> list[ToolResult]:

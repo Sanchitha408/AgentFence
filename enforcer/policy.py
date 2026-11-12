@@ -24,6 +24,11 @@ http_domain_deny       the request host does not match ``domains``
 
 Paths are normalised with ``sandbox.normalize_path`` before matching, so
 ``/home/user/../../etc/passwd`` is compared as ``/etc/passwd``.
+
+The optional top-level ``data_loss`` block is not a rule type. It configures
+the separate argument-level stage in ``enforcer/data_loss.py``, which runs only
+when the rules above allow a call. ``default.yaml`` and ``generated.yaml`` have
+no such block, so their behaviour is exactly v1.
 """
 
 from __future__ import annotations
@@ -37,6 +42,7 @@ from urllib.parse import urlparse
 
 import yaml
 
+from enforcer.data_loss import DataLossConfig
 from sample_agent import sandbox
 
 ALLOW = "allow"
@@ -90,6 +96,9 @@ class Policy:
     default_decision: str
     default_reason: str
     rules: tuple[Rule, ...]
+    # Optional v2 stage. ``None`` for policies without a top-level
+    # ``data_loss`` block, which keeps v1 policies byte-for-byte compatible.
+    data_loss: DataLossConfig | None = None
 
     def evaluate(
         self, tool: str, arguments: Mapping[str, Any] | None = None
@@ -283,6 +292,13 @@ def load_policy(path: str | Path) -> Policy:
             f"{source}: default_decision must be one of {', '.join(DECISIONS)}"
         )
 
+    raw_data_loss = data.get("data_loss")
+    data_loss = (
+        DataLossConfig.from_mapping(raw_data_loss, str(source))
+        if raw_data_loss is not None
+        else None
+    )
+
     rules: list[Rule] = []
     for index, raw in enumerate(raw_rules, start=1):
         if not isinstance(raw, dict):
@@ -328,4 +344,5 @@ def load_policy(path: str | Path) -> Policy:
             data.get("default_reason", "deny by default: no rule allowed this call")
         ),
         rules=tuple(rules),
+        data_loss=data_loss,
     )

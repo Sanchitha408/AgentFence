@@ -245,8 +245,8 @@ def test_trigger_baseline_writes_a_full_report(client: TestClient) -> None:
 
     report = client.get("/api/runs/baseline").json()
     assert report["enforced"] is False
-    assert report["summary"]["attacks"] == 18
-    assert report["summary"]["controls"] == 5
+    assert report["summary"]["attacks"] == 22
+    assert report["summary"]["controls"] == 6
 
 
 def test_trigger_enforced_uses_the_policy_and_writes_an_audit_log(
@@ -260,7 +260,7 @@ def test_trigger_enforced_uses_the_policy_and_writes_an_audit_log(
     report = client.get("/api/runs/enforced").json()
     assert report["enforced"] is True
     assert report["policy"].endswith("generated.yaml")
-    assert len(report["results"]) == 23
+    assert len(report["results"]) == 28
     # The temp policy has no reply configuration, but the runner still applies
     # the separate output stage; direct-02 should no longer succeed.
     rows = {row["id"]: row for row in report["results"]}
@@ -283,10 +283,37 @@ def test_trigger_compare_writes_json_and_html(client: TestClient) -> None:
     assert body["html"].endswith("compare.html")
 
     compare = client.get("/api/compare").json()
-    assert compare["summary"]["before"]["attacks"] == 18
-    assert compare["summary"]["after"]["attacks"] == 18
+    assert compare["summary"]["before"]["attacks"] == 22
+    assert compare["summary"]["after"]["attacks"] == 22
     assert compare["cohorts"]["held_out"]["before"]["attacks"] == 6
     assert isinstance(compare["still_succeeding"], list)
+
+
+def test_trigger_compare_adds_v2_when_the_policy_exists(tmp_path: Path) -> None:
+    reports = tmp_path / "reports"
+    policies = tmp_path / "policies"
+    reports.mkdir()
+    policies.mkdir()
+    (policies / "generated.yaml").write_text(POLICY_YAML, encoding="utf-8")
+    root = Path(__file__).resolve().parents[1]
+    (policies / "v2.yaml").write_text(
+        (root / "policies" / "v2.yaml").read_text(encoding="utf-8"),
+        encoding="utf-8",
+    )
+
+    app = create_app(
+        reports_dir=reports,
+        policies_dir=policies,
+        frontend_dir=tmp_path / "no-frontend",
+    )
+    with TestClient(app) as client:
+        response = client.post("/api/run", json={"kind": "compare"})
+        assert response.status_code == 200, response.text
+        compare = client.get("/api/compare").json()
+
+    assert compare["v2"]["policy"].endswith("v2.yaml")
+    assert len(compare["v2"]["new_attack_ids"]) == 4
+    assert compare["v2"]["controls"]["after"]["false_positives"] == 0
 
 
 def test_trigger_rejects_bad_requests(client: TestClient) -> None:

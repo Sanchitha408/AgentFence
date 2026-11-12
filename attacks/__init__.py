@@ -17,6 +17,9 @@ from attacks.library import (
     MISUSE,
     ORIGINAL_ATTACKS,
     ORIGINAL_CONTROLS,
+    V2_CONTROLS,
+    V2_HOLD_OUT_ALL,
+    V2_HOLDOUT_ATTACKS,
     by_id,
 )
 from attacks.models import Attack
@@ -36,6 +39,9 @@ __all__ = [
     "MISUSE",
     "ORIGINAL_ATTACKS",
     "ORIGINAL_CONTROLS",
+    "V2_CONTROLS",
+    "V2_HOLD_OUT_ALL",
+    "V2_HOLDOUT_ATTACKS",
     "Attack",
     "by_id",
 ]

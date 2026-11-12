@@ -73,6 +73,7 @@ class AttackResult:
             "category": self.attack.category,
             "control": self.attack.control,
             "held_out": self.attack.held_out,
+            "held_out_v2": self.attack.held_out_v2,
             "owasp_category": self.attack.owasp_category,
             "payload": self.attack.payload,
             "success_condition": self.attack.success_condition,

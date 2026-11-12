@@ -41,6 +41,12 @@ function collectRows(state) {
         name: sample.name,
         category: sample.category,
         held_out: sample.held_out ?? false,
+        held_out_v2: sample.held_out_v2 ?? false,
+        cohort: sample.held_out_v2
+          ? "held_out_v2"
+          : sample.held_out
+            ? "held_out"
+            : "original",
         owasp: sample.owasp_category,
         control: sample.control ?? false,
         detectors:
@@ -68,8 +74,11 @@ export function render(state) {
 
   const filtered = rows.filter((row) => {
     if (categoryFilter !== "all" && row.category !== categoryFilter) return false;
-    if (cohortFilter === "original" && row.held_out) return false;
-    if (cohortFilter === "held_out" && !row.held_out) return false;
+    if (cohortFilter === "original" && row.cohort !== "original") return false;
+    if (cohortFilter === "held_out" && row.cohort !== "held_out") return false;
+    if (cohortFilter === "held_out_v2" && row.cohort !== "held_out_v2") {
+      return false;
+    }
     return true;
   });
 
@@ -83,7 +92,7 @@ export function render(state) {
         </td>
         <td>${esc(categoryLabel(row.category))}</td>
         <td><span class="mono">${esc(row.owasp || "—")}</span></td>
-        <td>${cohortPill(row.held_out)}</td>
+        <td>${cohortPill(row.cohort)}</td>
         <td>${attackOutcome(row.before)}</td>
         <td>${attackOutcome(row.after)}</td>
         <td>${chips(row.detectors, "none")}</td>
@@ -112,9 +121,10 @@ export function render(state) {
       <div class="field">
         <label for="filter-cohort">Attack set</label>
         <select id="filter-cohort" data-filter="cohort">
-          <option value="all" ${cohortFilter === "all" ? "selected" : ""}>Original + held-out</option>
+          <option value="all" ${cohortFilter === "all" ? "selected" : ""}>All attack sets</option>
           <option value="original" ${cohortFilter === "original" ? "selected" : ""}>Original 12 only</option>
           <option value="held_out" ${cohortFilter === "held_out" ? "selected" : ""}>Held-out 6 only</option>
+          <option value="held_out_v2" ${cohortFilter === "held_out_v2" ? "selected" : ""}>Held-out v2 only</option>
         </select>
       </div>
       <span class="filter-note">Showing ${count(filtered.length)} of ${count(rows.length)} rows</span>

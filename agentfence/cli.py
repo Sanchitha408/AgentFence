@@ -108,6 +108,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="policy to enforce for the after run (default: %(default)s)",
     )
     compare.add_argument(
+        "--policy-v2",
+        default=None,
+        metavar="POLICY",
+        help="optional second-stage policy (for example policies/v2.yaml); "
+        "when given, the report also shows v1 vs v2 side by side",
+    )
+    compare.add_argument(
         "--out",
         default=DEFAULT_COMPARE,
         help="where to write the JSON comparison (default: %(default)s)",
@@ -259,6 +266,21 @@ def _run_compare_command(args: argparse.Namespace) -> int:
         output_guard=OutputGuard(audit=audit),
     )
 
+    v2_results = None
+    if args.policy_v2:
+        try:
+            v2_policy = load_policy(args.policy_v2)
+        except ValueError as exc:
+            print(f"agentfence: {exc}", file=sys.stderr)
+            return 2
+        v2_results = run_all(
+            ALL_ATTACKS,
+            agent_factory=partial(
+                build_sample_agent, policy=v2_policy, audit=audit
+            ),
+            output_guard=OutputGuard(audit=audit),
+        )
+
     saved = {row.get("id"): row for row in baseline.get("results") or []}
     before_rows: list[dict[str, Any]] = []
     computed: list[str] = []
@@ -273,6 +295,7 @@ def _run_compare_command(args: argparse.Namespace) -> int:
             row = dict(row)
         # Trust the library for the cohort, even if the saved report is older.
         row["held_out"] = attack.held_out
+        row["held_out_v2"] = attack.held_out_v2
         row["control"] = attack.control
         row.setdefault("category", attack.category)
         row.setdefault("detectors_fired", [])
@@ -286,6 +309,10 @@ def _run_compare_command(args: argparse.Namespace) -> int:
         baseline_source=args.baseline,
         computed_baseline_ids=computed,
         agent=args.agent,
+        v2_rows=[result.to_dict() for result in v2_results]
+        if v2_results is not None
+        else None,
+        v2_policy=args.policy_v2 or "",
     )
 
     json_path = write_json(comparison, args.out)

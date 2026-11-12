@@ -153,6 +153,56 @@ def render_html(comparison: Mapping[str, Any]) -> str:
     caveats = "".join(f"<li>{_e(item)}</li>" for item in comparison["caveats"])
     computed = comparison.get("baseline_computed_ids") or []
 
+    v2 = comparison.get("v2")
+    if v2:
+        cohort_rows = "".join(
+            "<tr>"
+            f"<th>{_e(cell['label'])}</th>"
+            f"<td>{_e(_rate(comparison['cohorts'][cohort]['after']))}</td>"
+            f"<td>{_e(_rate(cell['after']))}</td>"
+            "</tr>"
+            for cohort, cell in v2["cohorts"].items()
+        )
+        attack_rows = "".join(
+            "<tr class=\""
+            + ("bad" if row["v2_succeeded"] and not row["control"] else "")
+            + "\">"
+            + f"<td class=\"mono\">{_e(row['id'])}</td>"
+            + f"<td>{_e(row['cohort'])}</td>"
+            + f"<td>{_e(row['category'])}</td>"
+            + f"<td>{'succeeded' if row['v1_succeeded'] else ('blocked' if row['v1_blocked_by'] else 'no detection')}</td>"
+            + f"<td>{'succeeded' if row['v2_succeeded'] else ('blocked' if row['v2_blocked_by'] else 'no detection')}</td>"
+            + f"<td>{_e(', '.join(row['v2_blocked_by']) or '-')}</td>"
+            + f"<td>{_e(row['note'])}</td>"
+            + "</tr>"
+            for row in v2["attacks"]
+            if row["id"] in set(v2.get("new_attack_ids") or [])
+            or row["id"].startswith("held-")
+        )
+        blocked_by = ", ".join(
+            f"{rule} x{count}" for rule, count in (v2.get("blocked_by") or {}).items()
+        )
+        v2_html = f"""
+  <h1 class="v2">v1 → v2</h1>
+  <p class="meta">
+    v2 policy: <span class="mono">{_e(v2.get('policy') or '(not recorded)')}</span><br>
+    v2 overall: {_e(_rate(v2['summary']['after']))} ·
+    v2 control false positives: {v2['controls']['after']['false_positives']}/
+    {v2['controls']['after']['controls']} ·
+    v2 blocks by rule: {_e(blocked_by or '-')}<br>
+    v2 not blocked and not detected: {_e(', '.join(row['id'] for row in (v2.get('unresolved') or [])) or 'none')}
+  </p>
+  <h2>v1 vs v2 by attack set</h2>
+  <table class="rates"><thead><tr><th></th><th>v1</th><th>v2</th></tr></thead>
+  <tbody>{cohort_rows}</tbody></table>
+  <h2>Held-out v2 channels</h2>
+  <table class="wide"><thead><tr><th>id</th><th>set</th><th>category</th>
+  <th>v1</th><th>v2</th><th>v2 blocked by</th><th>detail</th></tr></thead>
+  <tbody>{attack_rows}</tbody></table>
+"""
+    else:
+        v2_html = ""
+
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -190,6 +240,8 @@ def render_html(comparison: Mapping[str, Any]) -> str:
   .wide td:last-child {{ max-width: 520px; }}
   .mono {{ font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }}
   .clean {{ color: #1e8449; font-weight: 600; }}
+  h1.v2 {{ margin-top: 2.6rem; padding-top: 1.2rem; border-top: 2px solid #1c2833; }}
+  tr.bad td {{ background: #fdecea; }}
   ul {{ line-height: 1.6; color: #34495e; }}
   footer {{ margin-top: 2.5rem; color: #7f8c8d; font-size: .8rem; }}
 </style>
@@ -220,6 +272,7 @@ def render_html(comparison: Mapping[str, Any]) -> str:
   </tbody></table>
   {succeeding_html}
   {fixed_html}
+  {v2_html}
   <h2>Caveats</h2>
   <ul>{caveats}</ul>
   <footer>Generated offline by AgentFence. No external assets, no tracking,

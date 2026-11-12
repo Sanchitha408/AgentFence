@@ -31,6 +31,10 @@ class Attack:
     # Held-out attacks are never shown to the auto-policy generator. They exist
     # to measure whether generated rules generalise beyond the attacks they saw.
     held_out: bool = False
+    # Attacks written for the v2 argument-level data-loss check. They are a
+    # separate cohort: the v1 policy was never measured against them, and the
+    # generator must not learn from them either.
+    held_out_v2: bool = False
 
     @property
     def expected_detector(self) -> str:

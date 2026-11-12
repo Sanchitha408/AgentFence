@@ -6,8 +6,9 @@ detectors they tripped, and emits a rule for each kind of dangerous action it
 can name. It never invents a rule for an attack it did not see, and it never
 emits an ``allow`` rule without a concrete constraint.
 
-Held-out attacks are marked ``held_out`` in the library and filtered out here.
-That is the whole defence for the held-out measurement: the generator cannot
+Held-out attacks are marked ``held_out`` (the v1 split) or ``held_out_v2``
+(the attacks written for the v2 data-loss stage) in the library and filtered
+out here. That is the whole defence for both measurements: the generator cannot
 learn a rule from an attack whose result it refuses to look at.
 
 Rules are generalised one level:
@@ -149,6 +150,7 @@ def _row(result: Any) -> dict[str, Any]:
             "category": str(result.get("category", "")),
             "control": bool(result.get("control", False)),
             "held_out": bool(result.get("held_out", False)),
+            "held_out_v2": bool(result.get("held_out_v2", False)),
             "succeeded": bool(result.get("succeeded", False)),
             "detectors_fired": list(result.get("detectors_fired", [])),
             "tool_calls": list(result.get("tool_calls", [])),
@@ -161,6 +163,7 @@ def _row(result: Any) -> dict[str, Any]:
         "category": attack.category,
         "control": bool(attack.control),
         "held_out": bool(getattr(attack, "held_out", False)),
+        "held_out_v2": bool(getattr(attack, "held_out_v2", False)),
         "succeeded": bool(result.succeeded),
         "detectors_fired": list(result.fired),
         "tool_calls": list(result.tool_calls),
@@ -213,10 +216,14 @@ def generate_policy(
     """
     rows = [_row(result) for result in results]
     original_attacks = [
-        row for row in rows if not row["control"] and not row["held_out"]
+        row
+        for row in rows
+        if not row["control"] and not row["held_out"] and not row["held_out_v2"]
     ]
     original_controls = [
-        row for row in rows if row["control"] and not row["held_out"]
+        row
+        for row in rows
+        if row["control"] and not row["held_out"] and not row["held_out_v2"]
     ]
     failures = [row for row in original_attacks if row["succeeded"]]
 
