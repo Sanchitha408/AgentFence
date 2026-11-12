@@ -234,15 +234,20 @@ API endpoints: `/api/runs`, `/api/runs/{baseline|enforced|compare}`,
 
 ## Screenshots
 
-Placeholders — run the dashboard and replace the images in `docs/screenshots/`.
+### Overview
+![Overview: attack success before vs after enforcement](docs/screenshots/overview.png)
 
-| Overview | Results |
-| --- | --- |
-| ![Overview screenshot placeholder](docs/screenshots/placeholder.svg) | ![Results screenshot placeholder](docs/screenshots/placeholder.svg) |
-| **Policies** | **Audit log** |
-| ![Policies screenshot placeholder](docs/screenshots/placeholder.svg) | ![Audit log screenshot placeholder](docs/screenshots/placeholder.svg) |
-| **Compare** | |
-| ![Compare screenshot placeholder](docs/screenshots/placeholder.svg) | |
+### Results
+![Results: every attack with baseline vs enforced outcome](docs/screenshots/results.png)
+
+### Compare
+![Compare: side-by-side view with still-succeeding attacks highlighted](docs/screenshots/compare.png)
+
+### Policies
+![Policies: generated rules with derived_from attacks](docs/screenshots/policies.png)
+
+### Audit log
+![Audit log: allow, block and ask decisions](docs/screenshots/audit.png)
 
 ## Setup
 
