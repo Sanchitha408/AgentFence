@@ -1,8 +1,10 @@
-"""Run attacks against an agent and record exactly what happened.
+"""Run attacks against a target and record exactly what happened.
 
-Each attack gets a fresh agent and a fresh fake world: the sandbox state is
-snapshotted, the attack may plant its bait, the agent runs once, all detectors
-look at the run, and then the sandbox is put back.
+Each attack gets a fresh target and a fresh fake world: the sandbox state is
+snapshotted, the attack may plant its bait, the target runs once, all detectors
+look at the run, and then the sandbox is put back. ``runs`` repeats that whole
+sequence, which is how a non-deterministic real model gets a per-attack success
+rate instead of a single pass/fail.
 """
 
 from __future__ import annotations
@@ -55,6 +57,29 @@ class AttackResult:
     final_answer: str = ""
     steps: int = 0
     stopped: str = "final_answer"
+    # How many times this attack was repeated, and how often it worked. With
+    # runs=1 these stay at one attempt and 0%/100%, so old reports are
+    # unchanged in meaning.
+    runs: int = 1
+    successes: int = 0
+    success_rate: float = 0.0
+    attempts: list[dict[str, Any]] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        if not self.attempts:
+            self.attempts = [
+                {
+                    "succeeded": self.succeeded,
+                    "detectors_fired": self.fired,
+                    "steps": self.steps,
+                    "stopped": self.stopped,
+                }
+            ]
+        self.runs = max(len(self.attempts), 1)
+        self.successes = sum(
+            1 for attempt in self.attempts if attempt.get("succeeded")
+        )
+        self.success_rate = round(self.successes / self.runs, 4)
 
     @property
     def fired(self) -> list[str]:
@@ -79,6 +104,9 @@ class AttackResult:
             "success_condition": self.attack.success_condition,
             "succeeded": self.succeeded,
             "false_positive": self.false_positive,
+            "runs": self.runs,
+            "successes": self.successes,
+            "success_rate": self.success_rate,
             "detectors_fired": self.fired,
             "steps": self.steps,
             "stopped": self.stopped,
@@ -92,6 +120,7 @@ class AttackResult:
             ),
             "final_answer": self.final_answer,
             "findings": [finding.to_dict() for finding in self.findings],
+            **({"attempts": list(self.attempts)} if self.runs > 1 else {}),
         }
 
 
@@ -125,16 +154,12 @@ def _blocked_calls(run: AgentRun) -> list[dict[str, Any]]:
     return blocked
 
 
-def run_attack(
+def _run_once(
     attack: Attack,
-    agent_factory: AgentFactory = build_sample_agent,
-    output_guard: OutputGuard | None = None,
+    agent_factory: Callable[[], Any],
+    output_guard: OutputGuard | None,
 ) -> AttackResult:
-    """Run one attack in a throwaway sandbox and judge it.
-
-    ``output_guard`` is the separate reply stage. It is optional so tool-policy
-    experiments can be run on their own; the CLI and ``compare`` pass one.
-    """
+    """One attack execution in a throwaway sandbox, judged by the detectors."""
     state = sandbox.snapshot_state()
     try:
         if attack.setup is not None:
@@ -167,10 +192,86 @@ def run_attack(
     )
 
 
+def _merge_findings(attempts: Sequence[AttackResult]) -> list[Finding]:
+    """One finding per detector, keeping evidence from a run that fired."""
+    merged: dict[str, Finding] = {}
+    order: list[str] = []
+    for attempt in attempts:
+        for finding in attempt.findings:
+            if finding.detector not in merged:
+                merged[finding.detector] = finding
+                order.append(finding.detector)
+            elif finding.detected and not merged[finding.detector].detected:
+                merged[finding.detector] = finding
+    return [merged[name] for name in order]
+
+
+def _merge_attempts(
+    attack: Attack, attempts: Sequence[AttackResult]
+) -> AttackResult:
+    """Collapse repeated runs into one result with a success rate."""
+    if len(attempts) == 1:
+        return attempts[0]
+
+    successes = sum(1 for attempt in attempts if attempt.succeeded)
+    # The representative attempt is the first one that worked; otherwise the
+    # last one, whose evidence is the most recent failure to hold.
+    representative = next(
+        (attempt for attempt in attempts if attempt.succeeded), attempts[-1]
+    )
+    attempt_rows = [
+        {
+            "succeeded": attempt.succeeded,
+            "detectors_fired": attempt.fired,
+            "steps": attempt.steps,
+            "stopped": attempt.stopped,
+        }
+        for attempt in attempts
+    ]
+    return AttackResult(
+        attack=attack,
+        succeeded=successes > 0,
+        findings=_merge_findings(attempts),
+        tool_calls=representative.tool_calls,
+        executed_calls=representative.executed_calls,
+        blocked_calls=representative.blocked_calls,
+        reply_check=representative.reply_check,
+        final_answer=representative.final_answer,
+        steps=representative.steps,
+        stopped=representative.stopped,
+        runs=len(attempts),
+        successes=successes,
+        success_rate=round(successes / len(attempts), 4),
+        attempts=attempt_rows,
+    )
+
+
+def run_attack(
+    attack: Attack,
+    agent_factory: Callable[[], Any] = build_sample_agent,
+    output_guard: OutputGuard | None = None,
+    runs: int = 1,
+) -> AttackResult:
+    """Run one attack in a throwaway sandbox and judge it.
+
+    ``output_guard`` is the separate reply stage. It is optional so tool-policy
+    experiments can be run on their own; the CLI and ``compare`` pass one.
+    ``runs`` repeats the run in a fresh sandbox each time and reports the
+    success rate; with ``runs=1`` the result is exactly the old pass/fail.
+    """
+    if runs < 1:
+        raise ValueError("runs must be at least 1")
+    attempts = [
+        _run_once(attack, agent_factory, output_guard) for _ in range(runs)
+    ]
+    return _merge_attempts(attack, attempts)
+
+
 def run_all(
     attacks: Sequence[Attack] | None = None,
-    agent_factory: AgentFactory = build_sample_agent,
+    agent_factory: Callable[[], Any] = build_sample_agent,
     output_guard: OutputGuard | None = None,
+    runs: int = 1,
 ) -> list[AttackResult]:
     """Run a list of attacks in order. Defaults to the whole library."""
     if attacks is None:
@@ -178,6 +279,11 @@ def run_all(
 
         attacks = ALL_ATTACKS
     return [
-        run_attack(attack, agent_factory=agent_factory, output_guard=output_guard)
+        run_attack(
+            attack,
+            agent_factory=agent_factory,
+            output_guard=output_guard,
+            runs=runs,
+        )
         for attack in attacks
     ]

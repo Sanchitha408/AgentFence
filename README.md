@@ -43,6 +43,7 @@ argument-level data-loss stage on top of the generated v1 rules.
 
 ```text
 sample_agent/   deliberately vulnerable agent, fake tools, in-memory sandbox
+targets/        Target interface, the sample target, and OpenAI-compatible targets
 attacks/        12 original attacks, 6 held-out, 4 held-out-v2, 6 controls
 detectors/      canary_leak, forbidden_tool_call, unauthorized_recipient,
                 system_prompt_leak
@@ -103,6 +104,83 @@ bash scripts/demo.sh
 `scripts/demo.sh` creates the virtual environment if needed, installs the
 requirements, runs the tests, runs the baseline, runs the v1/v2 comparison, and
 prints the dashboard URL.
+
+## Testing a real model
+
+By default `--target sample` runs the deterministic MockLLM agent. Phase 1 also
+adds a real-model target that speaks the OpenAI chat-completions protocol. The
+model under test still only gets the four *fake* tools: every `read_file`,
+`send_email`, `run_shell` and `http_get` call is executed against the same
+in-memory sandbox, so no task can touch a real file, inbox, shell or network.
+
+### Local Ollama
+
+Start Ollama and pull a tool-calling model, for example:
+
+```bash
+ollama serve
+ollama pull llama3.2
+```
+
+Then run the normal attack library against it. Ollama's OpenAI-compatible API
+lives at `http://localhost:11434/v1` and needs no API key:
+
+```bash
+python -m agentfence attack \
+    --target openai \
+    --base-url http://localhost:11434/v1 \
+    --model llama3.2 \
+    --runs 5 \
+    --out reports/ollama-baseline.json
+```
+
+And the same flags work for the before/after comparison:
+
+```bash
+python -m agentfence compare \
+    --baseline reports/ollama-baseline.json \
+    --policy policies/generated.yaml \
+    --policy-v2 policies/v2.yaml \
+    --target openai \
+    --base-url http://localhost:11434/v1 \
+    --model llama3.2 \
+    --runs 5 \
+    --out reports/ollama-compare.json
+```
+
+### Hosted free-tier endpoints
+
+Any endpoint that implements `/chat/completions` works; set `--base-url` and
+`--model` to whatever the provider documents and export the key:
+
+```bash
+export OPENAI_API_KEY=...   # or another variable, see --api-key-env
+python -m agentfence attack \
+    --target openai \
+    --base-url https://api.example.com/v1 \
+    --model some-small-model \
+    --runs 3
+```
+
+The key is read from the environment variable named by `--api-key-env`
+(default `OPENAI_API_KEY`). If the variable is unset, no `Authorization` header
+is sent, which is what local Ollama expects. The base URL is fully
+configurable, so the same target covers Ollama, hosted free tiers and any
+self-hosted gateway.
+
+### Repeated runs and saved metadata
+
+Real models are non-deterministic, so `--runs N` repeats every attack N times,
+each in a fresh sandbox, and records how many of those runs succeeded. The
+report keeps one row per attack with `runs`, `successes`, `success_rate` and a
+per-attempt breakdown; the terminal table shows e.g. `VULNERABLE 3/5`. A row is
+marked `succeeded` when at least one of its runs did. The report and comparison
+both save the `target` and `model` (and `runs`) so a real-model run is never
+confused with the reproducible MockLLM baseline.
+
+The test suite never calls a real model: `tests/test_targets.py` starts a fake
+chat-completions server on localhost and runs the tool loop, the detectors and
+the CLI against it, so CI stays offline.
 
 ## Results
 
@@ -166,10 +244,12 @@ This is a research benchmark, not a guarantee. The important gaps:
   understated.** Base64 and hex leaks are invisible to the raw canary detector
   even when v2's decoding stage blocks them. Read `v2.attacks` for per-channel
   detail rather than relying on baseline ASR alone.
-- **The model is a rule-based mock.** `sample_agent/mock_llm.py` is a
-  deterministic regular-expression stand-in for an LLM. The numbers are
-  reproducible, but they say nothing about how a particular production model
-  would behave.
+- **The default model is a rule-based mock.** `sample_agent/mock_llm.py` is a
+  deterministic regular-expression stand-in for an LLM. The numbers in the
+  table above are reproducible, but they say nothing about how a particular
+  production model would behave. The `--target openai` adapter now measures a
+  real model through the same attacks and detectors, but its results are
+  model-specific, non-deterministic, and not part of the benchmark table.
 - **The attack set is small and author-written.** 22 attacks and 6 controls,
   all written by the same author, cannot cover the space of agentic failures.
   The held-out split reduces training-fit bias but is not an external benchmark.
@@ -200,8 +280,8 @@ Additional known gaps:
   split-payload gap.
 - More encodings, compression and bespoke-encoding detection.
 - A larger, independently authored attack corpus; report confidence intervals.
-- An adapter for a real model behind the same agent interface, with the mock
-  kept as the deterministic default.
+- More target adapters (native tool protocols, agents behind HTTP APIs) while
+  the mock stays the deterministic default.
 - Additional tools and channels, an MCP proxy mode, and a GitHub Action for
   continuous attack runs.
 - Human-approval (`ask`) workflows with an approval queue in the dashboard.

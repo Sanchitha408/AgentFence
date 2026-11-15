@@ -20,7 +20,9 @@ from reports import (
     write_html,
     write_json,
 )
-from runner import build_sample_agent, run_all, run_attack
+from runner import run_all, run_attack
+from targets import TARGETS, build_target, model_label
+from targets.openai_compat import TargetError
 
 # Agents that can be tested today. Milestone 5 adds HTTP-accessible agents.
 AGENTS = ("sample",)
@@ -28,6 +30,44 @@ DEFAULT_OUT = "reports/baseline.json"
 DEFAULT_AUDIT = "reports/audit.jsonl"
 DEFAULT_POLICY = "policies/generated.yaml"
 DEFAULT_COMPARE = "reports/compare.json"
+
+
+def _add_target_options(parser: argparse.ArgumentParser) -> None:
+    """Options shared by ``attack`` and ``compare`` for choosing a target."""
+    parser.add_argument(
+        "--target",
+        choices=TARGETS,
+        default=None,
+        help="target to test: 'sample' (deterministic mock) or 'openai' "
+        "(any OpenAI-compatible endpoint); overrides --agent",
+    )
+    parser.add_argument(
+        "--base-url",
+        default=None,
+        metavar="URL",
+        help="OpenAI-compatible base URL, for example "
+        "http://localhost:11434/v1 for Ollama",
+    )
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="model name sent to the endpoint (saved in the report)",
+    )
+    parser.add_argument(
+        "--api-key-env",
+        default="OPENAI_API_KEY",
+        metavar="ENV_VAR",
+        help="environment variable holding the API key; unset means no auth "
+        "header, which is what local Ollama needs (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--runs",
+        type=int,
+        default=1,
+        metavar="N",
+        help="repeat each attack N times and report a success rate instead of "
+        "one pass/fail (default: %(default)s)",
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -77,6 +117,7 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="print the report without writing a JSON file",
     )
+    _add_target_options(attack)
 
     autopolicy = subparsers.add_parser(
         "autopolicy",
@@ -137,7 +178,40 @@ def _build_parser() -> argparse.ArgumentParser:
         choices=AGENTS,
         help="agent to test (default: %(default)s)",
     )
+    _add_target_options(compare)
     return parser
+
+
+def _target_settings(args: argparse.Namespace) -> tuple[str, int]:
+    """Resolve --target/--agent and validate the options it needs."""
+    target = getattr(args, "target", None) or getattr(args, "agent", "sample")
+    runs = getattr(args, "runs", 1)
+    if runs < 1:
+        raise ValueError("--runs must be at least 1")
+    if target == "openai":
+        if not getattr(args, "base_url", None):
+            raise ValueError("--base-url is required for --target openai")
+        if not getattr(args, "model", None):
+            raise ValueError("--model is required for --target openai")
+    return target, runs
+
+
+def _target_factory(
+    args: argparse.Namespace,
+    policy: Any | None = None,
+    audit: AuditLog | None = None,
+) -> Any:
+    """A callable that builds a fresh target with the requested settings."""
+    target, _ = _target_settings(args)
+    return partial(
+        build_target,
+        target,
+        policy=policy,
+        audit=audit,
+        base_url=getattr(args, "base_url", None),
+        model=getattr(args, "model", None),
+        api_key_env=getattr(args, "api_key_env", None),
+    )
 
 
 def _select(args: argparse.Namespace) -> tuple:
@@ -160,6 +234,12 @@ def _select(args: argparse.Namespace) -> tuple:
 def _run_attack_command(args: argparse.Namespace) -> int:
     attacks = _select(args)
 
+    try:
+        target, runs = _target_settings(args)
+    except ValueError as exc:
+        print(f"agentfence: {exc}", file=sys.stderr)
+        return 2
+
     policy = None
     audit = None
     if args.enforce:
@@ -170,18 +250,31 @@ def _run_attack_command(args: argparse.Namespace) -> int:
             return 2
         audit = AuditLog(args.audit or DEFAULT_AUDIT)
 
-    agent_factory = build_sample_agent
+    agent_factory = _target_factory(args, policy=policy, audit=audit)
     output_guard = None
     if policy is not None:
-        agent_factory = partial(build_sample_agent, policy=policy, audit=audit)
         # The reply stage is separate from tool rules: it runs after the agent
         # answers and withholds a reply that contains prompt/secret material.
         output_guard = OutputGuard(audit=audit)
 
-    results = run_all(
-        attacks, agent_factory=agent_factory, output_guard=output_guard
+    try:
+        results = run_all(
+            attacks,
+            agent_factory=agent_factory,
+            output_guard=output_guard,
+            runs=runs,
+        )
+    except TargetError as exc:
+        print(f"agentfence: {exc}", file=sys.stderr)
+        return 1
+    report = build_report(
+        results,
+        agent=target,
+        policy=args.enforce or None,
+        target=target,
+        model=model_label(target, args.model),
+        runs=runs,
     )
-    report = build_report(results, agent=args.agent, policy=args.enforce or None)
 
     print(format_table(report))
 
@@ -240,6 +333,12 @@ def _run_autopolicy_command(args: argparse.Namespace) -> int:
 
 def _run_compare_command(args: argparse.Namespace) -> int:
     try:
+        target, runs = _target_settings(args)
+    except ValueError as exc:
+        print(f"agentfence: {exc}", file=sys.stderr)
+        return 2
+
+    try:
         baseline = _load_json(args.baseline)
     except ValueError as exc:
         print(f"agentfence: {exc}", file=sys.stderr)
@@ -260,26 +359,31 @@ def _run_compare_command(args: argparse.Namespace) -> int:
         return 2
 
     audit = AuditLog(args.audit) if args.audit else None
-    after_results = run_all(
-        ALL_ATTACKS,
-        agent_factory=partial(build_sample_agent, policy=policy, audit=audit),
-        output_guard=OutputGuard(audit=audit),
-    )
-
-    v2_results = None
-    if args.policy_v2:
-        try:
-            v2_policy = load_policy(args.policy_v2)
-        except ValueError as exc:
-            print(f"agentfence: {exc}", file=sys.stderr)
-            return 2
-        v2_results = run_all(
+    after_factory = _target_factory(args, policy=policy, audit=audit)
+    try:
+        after_results = run_all(
             ALL_ATTACKS,
-            agent_factory=partial(
-                build_sample_agent, policy=v2_policy, audit=audit
-            ),
+            agent_factory=after_factory,
             output_guard=OutputGuard(audit=audit),
+            runs=runs,
         )
+
+        v2_results = None
+        if args.policy_v2:
+            try:
+                v2_policy = load_policy(args.policy_v2)
+            except ValueError as exc:
+                print(f"agentfence: {exc}", file=sys.stderr)
+                return 2
+            v2_results = run_all(
+                ALL_ATTACKS,
+                agent_factory=_target_factory(args, policy=v2_policy, audit=audit),
+                output_guard=OutputGuard(audit=audit),
+                runs=runs,
+            )
+    except TargetError as exc:
+        print(f"agentfence: {exc}", file=sys.stderr)
+        return 1
 
     saved = {row.get("id"): row for row in baseline.get("results") or []}
     before_rows: list[dict[str, Any]] = []
@@ -289,7 +393,9 @@ def _run_compare_command(args: argparse.Namespace) -> int:
         if row is None:
             # The library gained an attack since the baseline was captured.
             # Measure it now rather than silently dropping it from the split.
-            row = run_attack(attack).to_dict()
+            row = run_attack(
+                attack, agent_factory=after_factory, runs=runs
+            ).to_dict()
             computed.append(attack.id)
         else:
             row = dict(row)
@@ -308,7 +414,10 @@ def _run_compare_command(args: argparse.Namespace) -> int:
         policy=args.policy,
         baseline_source=args.baseline,
         computed_baseline_ids=computed,
-        agent=args.agent,
+        agent=target,
+        target=target,
+        model=model_label(target, args.model),
+        runs=runs,
         v2_rows=[result.to_dict() for result in v2_results]
         if v2_results is not None
         else None,

@@ -38,11 +38,24 @@ def build_report(
     results: Sequence[AttackResult],
     agent: str = "sample",
     policy: str | None = None,
+    *,
+    target: str | None = None,
+    model: str | None = None,
+    runs: int = 1,
 ) -> dict[str, Any]:
     """Turn a list of results into the report document.
 
     ``policy`` is the policy file that was enforced, or None for a baseline run.
+    ``target``/``model`` are saved so a real-model run can be told apart from a
+    MockLLM one; ``runs`` records how often each attack was repeated.
     """
+    target_label = target or agent
+    model_label = model or "MockLLM (rule-based)"
+    environment = (
+        f"offline / simulated sandbox, {model_label}"
+        if target_label == "sample"
+        else f"simulated sandbox tools, target={target_label}, model={model_label}"
+    )
     attacks = [result for result in results if not result.attack.control]
     controls = [result for result in results if result.attack.control]
 
@@ -75,10 +88,13 @@ def build_report(
 
     return {
         "agent": agent,
+        "target": target_label,
+        "model": model_label,
         "policy": policy or "none (baseline)",
         "enforced": policy is not None,
+        "runs": runs,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "environment": "offline / simulated sandbox, MockLLM (rule-based)",
+        "environment": environment,
         "summary": {
             "attacks": len(attacks),
             "succeeded": succeeded_total,
@@ -103,8 +119,14 @@ def write_json(report: dict[str, Any], path: str | Path) -> Path:
 
 def _verdict(row: dict[str, Any]) -> str:
     if row["control"]:
-        return "FALSE POSITIVE" if row["succeeded"] else "clean"
-    return "VULNERABLE" if row["succeeded"] else "held"
+        verdict = "FALSE POSITIVE" if row["succeeded"] else "clean"
+    else:
+        verdict = "VULNERABLE" if row["succeeded"] else "held"
+    runs = int(row.get("runs") or 1)
+    if runs > 1:
+        successes = int(row.get("successes") or 0)
+        verdict = f"{verdict} {successes}/{runs}"
+    return verdict
 
 
 def format_table(report: dict[str, Any]) -> str:
@@ -119,6 +141,11 @@ def format_table(report: dict[str, Any]) -> str:
     rule = "-" * max(len(header), 78)
 
     lines.append(f"Agent: {report['agent']}  |  {report['environment']}")
+    if int(report.get("runs") or 1) > 1:
+        lines.append(
+            f"Repeated: {report['runs']} run(s) per attack "
+            "(RESULT includes the success rate)"
+        )
     if report.get("enforced"):
         lines.append(f"Policy: {report['policy']}")
     lines.append(rule)

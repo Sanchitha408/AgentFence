@@ -270,6 +270,9 @@ def build_comparison(
     agent: str = "sample",
     v2_rows: Sequence[Mapping[str, Any]] | None = None,
     v2_policy: str = "",
+    target: str | None = None,
+    model: str | None = None,
+    runs: int = 1,
 ) -> dict[str, Any]:
     """Combine a baseline and an enforced run into one report document.
 
@@ -323,12 +326,21 @@ def build_comparison(
         "Everything is simulated: no real file, email, shell or network access.",
     ]
 
+    target_label = target or agent
+    model_label = model or "MockLLM (rule-based)"
     comparison: dict[str, Any] = {
         "agent": agent,
+        "target": target_label,
+        "model": model_label,
+        "runs": runs,
         "policy": policy,
         "baseline_source": baseline_source,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "environment": "offline / simulated sandbox, MockLLM (rule-based)",
+        "environment": (
+            f"offline / simulated sandbox, {model_label}"
+            if target_label == "sample"
+            else f"simulated sandbox tools, target={target_label}, model={model_label}"
+        ),
         "baseline_computed_ids": list(computed_baseline_ids),
         "summary": {
             "before": overall_before,
@@ -455,6 +467,11 @@ def format_compare_table(comparison: Mapping[str, Any]) -> str:
         f"Agent: {comparison.get('agent', 'sample')}  |  "
         f"{comparison.get('environment', '')}"
     )
+    if int(comparison.get("runs") or 1) > 1:
+        lines.append(
+            f"Repeated: {comparison['runs']} run(s) per attack "
+            "(rates are per attack over those runs)"
+        )
     lines.append(f"Policy: {comparison['policy']}")
     lines.append(f"Baseline: {comparison.get('baseline_source') or '(in-memory)'}")
     if comparison.get("baseline_computed_ids"):
