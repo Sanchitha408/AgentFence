@@ -9,6 +9,7 @@ rate instead of a single pass/fail.
 
 from __future__ import annotations
 
+import time
 from dataclasses import dataclass, field
 from typing import Any, Callable, Sequence
 
@@ -57,6 +58,8 @@ class AttackResult:
     final_answer: str = ""
     steps: int = 0
     stopped: str = "final_answer"
+    # Set when the target could not produce a run at all (timeout, HTTP error).
+    error: str = ""
     # How many times this attack was repeated, and how often it worked. With
     # runs=1 these stay at one attempt and 0%/100%, so old reports are
     # unchanged in meaning.
@@ -73,6 +76,8 @@ class AttackResult:
                     "detectors_fired": self.fired,
                     "steps": self.steps,
                     "stopped": self.stopped,
+                    "status": self.status,
+                    "error": self.error,
                 }
             ]
         self.runs = max(len(self.attempts), 1)
@@ -85,6 +90,27 @@ class AttackResult:
     def fired(self) -> list[str]:
         """Detectors that reported a problem on this run."""
         return [finding.detector for finding in self.findings if finding.detected]
+
+    @property
+    def status(self) -> str:
+        """What happened, in one word.
+
+        ``succeeded`` is the success condition firing. ``attempted`` means the
+        agent went after the goal (another detector fired) but the success
+        condition did not, so it must not be called a win or a clean hold.
+        ``held`` is no detector at all; ``error`` is a run that never happened.
+        """
+        if self.attack.control:
+            if self.error:
+                return "error"
+            return "false_positive" if self.succeeded else "clean"
+        if self.succeeded:
+            return "succeeded"
+        if self.fired:
+            return "attempted"
+        if self.error:
+            return "error"
+        return "held"
 
     @property
     def false_positive(self) -> bool:
@@ -104,6 +130,8 @@ class AttackResult:
             "success_condition": self.attack.success_condition,
             "succeeded": self.succeeded,
             "false_positive": self.false_positive,
+            "status": self.status,
+            "error": self.error,
             "runs": self.runs,
             "successes": self.successes,
             "success_rate": self.success_rate,
@@ -219,19 +247,27 @@ def _merge_attempts(
     representative = next(
         (attempt for attempt in attempts if attempt.succeeded), attempts[-1]
     )
+    findings = _merge_findings(attempts)
+    merged_error = (
+        next((attempt.error for attempt in attempts if attempt.error), "")
+        if successes == 0 and not any(finding.detected for finding in findings)
+        else ""
+    )
     attempt_rows = [
         {
             "succeeded": attempt.succeeded,
             "detectors_fired": attempt.fired,
             "steps": attempt.steps,
             "stopped": attempt.stopped,
+            "status": attempt.status,
+            "error": attempt.error,
         }
         for attempt in attempts
     ]
     return AttackResult(
         attack=attack,
         succeeded=successes > 0,
-        findings=_merge_findings(attempts),
+        findings=findings,
         tool_calls=representative.tool_calls,
         executed_calls=representative.executed_calls,
         blocked_calls=representative.blocked_calls,
@@ -239,6 +275,7 @@ def _merge_attempts(
         final_answer=representative.final_answer,
         steps=representative.steps,
         stopped=representative.stopped,
+        error=merged_error,
         runs=len(attempts),
         successes=successes,
         success_rate=round(successes / len(attempts), 4),
@@ -246,11 +283,29 @@ def _merge_attempts(
     )
 
 
+def _error_result(attack: Attack, exc: BaseException) -> AttackResult:
+    """An attack that could not run, recorded as evidence instead of a crash."""
+    message = str(exc).strip() or type(exc).__name__
+    return AttackResult(
+        attack=attack,
+        succeeded=False,
+        steps=0,
+        stopped="error",
+        error=message,
+    )
+
+
+ProgressCallback = Callable[[dict[str, Any]], None]
+
+
 def run_attack(
     attack: Attack,
     agent_factory: Callable[[], Any] = build_sample_agent,
     output_guard: OutputGuard | None = None,
     runs: int = 1,
+    *,
+    keep_going: bool = False,
+    progress: ProgressCallback | None = None,
 ) -> AttackResult:
     """Run one attack in a throwaway sandbox and judge it.
 
@@ -258,12 +313,45 @@ def run_attack(
     experiments can be run on their own; the CLI and ``compare`` pass one.
     ``runs`` repeats the run in a fresh sandbox each time and reports the
     success rate; with ``runs=1`` the result is exactly the old pass/fail.
+    ``keep_going`` turns an exception into an ``error`` result and moves on;
+    the default re-raises, which is what library callers expect.
     """
     if runs < 1:
         raise ValueError("runs must be at least 1")
-    attempts = [
-        _run_once(attack, agent_factory, output_guard) for _ in range(runs)
-    ]
+
+    attempts: list[AttackResult] = []
+    for run_index in range(1, runs + 1):
+        if progress is not None:
+            progress(
+                {
+                    "event": "start",
+                    "id": attack.id,
+                    "run": run_index,
+                    "runs": runs,
+                }
+            )
+        started = time.monotonic()
+        try:
+            attempt = _run_once(attack, agent_factory, output_guard)
+        except Exception as exc:
+            if not keep_going:
+                raise
+            attempt = _error_result(attack, exc)
+        elapsed = time.monotonic() - started
+        if progress is not None:
+            progress(
+                {
+                    "event": "finish",
+                    "id": attack.id,
+                    "run": run_index,
+                    "runs": runs,
+                    "status": attempt.status,
+                    "error": attempt.error,
+                    "seconds": elapsed,
+                }
+            )
+        attempts.append(attempt)
+
     return _merge_attempts(attack, attempts)
 
 
@@ -272,18 +360,35 @@ def run_all(
     agent_factory: Callable[[], Any] = build_sample_agent,
     output_guard: OutputGuard | None = None,
     runs: int = 1,
+    *,
+    keep_going: bool = False,
+    progress: ProgressCallback | None = None,
 ) -> list[AttackResult]:
     """Run a list of attacks in order. Defaults to the whole library."""
     if attacks is None:
         from attacks import ALL_ATTACKS
 
         attacks = ALL_ATTACKS
-    return [
-        run_attack(
-            attack,
-            agent_factory=agent_factory,
-            output_guard=output_guard,
-            runs=runs,
+
+    total = len(attacks)
+    results: list[AttackResult] = []
+    for index, attack in enumerate(attacks, 1):
+        def scoped(
+            event: dict[str, Any],
+            index: int = index,
+            attack: Attack = attack,
+        ) -> None:
+            if progress is not None:
+                progress({**event, "index": index, "total": total})
+
+        results.append(
+            run_attack(
+                attack,
+                agent_factory=agent_factory,
+                output_guard=output_guard,
+                runs=runs,
+                keep_going=keep_going,
+                progress=scoped if progress is not None else None,
+            )
         )
-        for attack in attacks
-    ]
+    return results

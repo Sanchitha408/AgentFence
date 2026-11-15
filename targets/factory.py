@@ -24,7 +24,7 @@ def build_target(
     model: str | None = None,
     api_key_env: str | None = None,
     max_steps: int | None = None,
-    timeout: float = 120.0,
+    timeout: float = 180.0,
 ) -> Target:
     """Create a fresh target per call, exactly like the old agent factory.
 

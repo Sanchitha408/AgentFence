@@ -83,6 +83,10 @@ class TargetError(RuntimeError):
     """The endpoint could not be reached or returned something unusable."""
 
 
+class _RequestTimeout(Exception):
+    """Internal: one request exceeded the per-request timeout."""
+
+
 def _parse_arguments(raw: Any) -> dict[str, Any]:
     """Turn a function-call argument payload into a dict, leniently."""
     if isinstance(raw, dict):
@@ -109,7 +113,7 @@ class OpenAICompatibleTarget(Target):
         tools: Any | None = None,
         system_prompt: str = DEFAULT_SYSTEM_PROMPT,
         max_steps: int = MAX_STEPS,
-        timeout: float = 120.0,
+        timeout: float = 180.0,
     ) -> None:
         super().__init__(tools=tools, max_steps=max_steps)
         self.base_url = base_url.rstrip("/")
@@ -190,7 +194,20 @@ class OpenAICompatibleTarget(Target):
     # -- HTTP ----------------------------------------------------------------
 
     def _chat(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
-        """POST one chat-completions request and return the assistant message."""
+        """POST one request, retrying a timeout once before giving up."""
+        for attempt in range(2):
+            try:
+                return self._post(messages)
+            except _RequestTimeout as exc:
+                if attempt == 1:
+                    raise TargetError(
+                        f"request timed out after {self.timeout:g}s "
+                        "(retried once)"
+                    ) from exc
+        raise AssertionError("unreachable")
+
+    def _post(self, messages: list[dict[str, Any]]) -> dict[str, Any]:
+        """One chat-completions request and its assistant message."""
         body = json.dumps(
             {
                 "model": self.model,
@@ -216,7 +233,15 @@ class OpenAICompatibleTarget(Target):
             raise TargetError(
                 f"{self.base_url}/chat/completions returned HTTP {exc.code}: {detail}"
             ) from exc
-        except (urllib.error.URLError, OSError) as exc:
+        except TimeoutError as exc:
+            raise _RequestTimeout from exc
+        except urllib.error.URLError as exc:
+            if isinstance(exc.reason, TimeoutError):
+                raise _RequestTimeout from exc
+            raise TargetError(
+                f"cannot reach {self.base_url}/chat/completions: {exc}"
+            ) from exc
+        except OSError as exc:
             raise TargetError(
                 f"cannot reach {self.base_url}/chat/completions: {exc}"
             ) from exc

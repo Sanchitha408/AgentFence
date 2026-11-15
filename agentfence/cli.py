@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
+from datetime import datetime
 from functools import partial
 from pathlib import Path
 from typing import Any, Sequence
@@ -68,6 +70,22 @@ def _add_target_options(parser: argparse.ArgumentParser) -> None:
         help="repeat each attack N times and report a success rate instead of "
         "one pass/fail (default: %(default)s)",
     )
+    parser.add_argument(
+        "--timeout",
+        type=float,
+        default=180.0,
+        metavar="SECONDS",
+        help="seconds allowed per model request; a timed-out request is "
+        "retried once (default: %(default)s)",
+    )
+    parser.add_argument(
+        "--keep-going",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="record a timed-out or failed attack as an error and continue "
+        "with the rest of the scan (default: on; use --no-keep-going to stop "
+        "at the first failure)",
+    )
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -91,8 +109,10 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     attack.add_argument(
         "--out",
-        default=DEFAULT_OUT,
-        help="where to write the JSON report (default: %(default)s)",
+        default=None,
+        help="where to write the JSON report (default: reports/baseline.json "
+        "for the sample target; a target-and-model-named file for real "
+        "targets)",
     )
     attack.add_argument(
         "--enforce",
@@ -188,6 +208,9 @@ def _target_settings(args: argparse.Namespace) -> tuple[str, int]:
     runs = getattr(args, "runs", 1)
     if runs < 1:
         raise ValueError("--runs must be at least 1")
+    timeout = getattr(args, "timeout", 180.0)
+    if timeout <= 0:
+        raise ValueError("--timeout must be greater than 0")
     if target == "openai":
         if not getattr(args, "base_url", None):
             raise ValueError("--base-url is required for --target openai")
@@ -211,7 +234,47 @@ def _target_factory(
         base_url=getattr(args, "base_url", None),
         model=getattr(args, "model", None),
         api_key_env=getattr(args, "api_key_env", None),
+        timeout=getattr(args, "timeout", 180.0),
     )
+
+
+def _default_out_path(target: str, model: str | None) -> str:
+    """A report path that cannot overwrite the mock baseline.
+
+    Real-model runs are non-deterministic and model-specific, so naming the
+    file after the target, model and time keeps them apart from
+    ``reports/baseline.json``.
+    """
+    if target == "sample":
+        return DEFAULT_OUT
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "-", model or "unknown").strip("-.")
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    return f"reports/{target}-{slug or 'unknown'}-{stamp}.json"
+
+
+def _progress_printer() -> Any:
+    """Print one line per attempt, finishing the line once the run ends."""
+
+    def report(event: dict[str, Any]) -> None:
+        if event["event"] == "start":
+            suffix = (
+                f" run {event['run']}/{event['runs']}"
+                if event["runs"] > 1
+                else ""
+            )
+            print(
+                f"[{event['index']}/{event['total']}] {event['id']}{suffix} ... ",
+                end="",
+                flush=True,
+            )
+            return
+        status = event["status"].replace("_", "-")
+        line = f"{status} ({event['seconds']:.0f}s)"
+        if event["status"] == "error" and event.get("error"):
+            line += f": {event['error']}"
+        print(line, flush=True)
+
+    return report
 
 
 def _select(args: argparse.Namespace) -> tuple:
@@ -263,23 +326,36 @@ def _run_attack_command(args: argparse.Namespace) -> int:
             agent_factory=agent_factory,
             output_guard=output_guard,
             runs=runs,
+            keep_going=args.keep_going,
+            progress=_progress_printer(),
         )
     except TargetError as exc:
+        print()  # finish a progress line left open by --no-keep-going
         print(f"agentfence: {exc}", file=sys.stderr)
         return 1
+    model = model_label(target, args.model)
     report = build_report(
         results,
         agent=target,
         policy=args.enforce or None,
         target=target,
-        model=model_label(target, args.model),
+        model=model,
         runs=runs,
     )
 
     print(format_table(report))
 
     if not args.no_write:
-        path = write_json(report, args.out)
+        out = args.out or _default_out_path(target, model)
+        if target != "sample" and Path(out).resolve() == Path(DEFAULT_OUT).resolve():
+            # A real-model run must never replace the reproducible baseline.
+            out = _default_out_path(target, model)
+            print(
+                f"agentfence: refusing to write a real-target run to "
+                f"{DEFAULT_OUT}; writing {out} instead",
+                file=sys.stderr,
+            )
+        path = write_json(report, out)
         print(f"\nJSON report written to {path}")
     if audit is not None:
         print(f"Audit log appended to {audit.path}")
@@ -366,6 +442,8 @@ def _run_compare_command(args: argparse.Namespace) -> int:
             agent_factory=after_factory,
             output_guard=OutputGuard(audit=audit),
             runs=runs,
+            keep_going=args.keep_going,
+            progress=_progress_printer(),
         )
 
         v2_results = None
@@ -380,8 +458,11 @@ def _run_compare_command(args: argparse.Namespace) -> int:
                 agent_factory=_target_factory(args, policy=v2_policy, audit=audit),
                 output_guard=OutputGuard(audit=audit),
                 runs=runs,
+                keep_going=args.keep_going,
+                progress=_progress_printer(),
             )
     except TargetError as exc:
+        print()  # finish a progress line left open by --no-keep-going
         print(f"agentfence: {exc}", file=sys.stderr)
         return 1
 
@@ -394,7 +475,10 @@ def _run_compare_command(args: argparse.Namespace) -> int:
             # The library gained an attack since the baseline was captured.
             # Measure it now rather than silently dropping it from the split.
             row = run_attack(
-                attack, agent_factory=after_factory, runs=runs
+                attack,
+                agent_factory=after_factory,
+                runs=runs,
+                keep_going=args.keep_going,
             ).to_dict()
             computed.append(attack.id)
         else:

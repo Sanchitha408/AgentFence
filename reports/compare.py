@@ -17,7 +17,7 @@ from datetime import datetime, timezone
 from typing import Any, Mapping, Sequence
 
 from attacks.library import CATEGORIES
-from reports.baseline import CATEGORY_LABELS, _ratio
+from reports.baseline import CATEGORY_LABELS, _ratio, result_status
 
 
 def _cohort_label(cohort: str) -> str:
@@ -57,9 +57,13 @@ def _evidence(row: Mapping[str, Any]) -> list[str]:
 def _rate(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     attacks = [row for row in rows if not row.get("control")]
     succeeded = sum(1 for row in attacks if row.get("succeeded"))
+    statuses = [result_status(row) for row in attacks]
     return {
         "attacks": len(attacks),
         "succeeded": succeeded,
+        "attempted": statuses.count("attempted"),
+        "held": statuses.count("held"),
+        "errors": statuses.count("error"),
         "asr": _ratio(succeeded, len(attacks)),
     }
 
@@ -508,6 +512,11 @@ def format_compare_table(comparison: Mapping[str, Any]) -> str:
         f"Fixed: {summary['attacks_fixed']}  |  "
         f"still succeeding: {summary['attacks_still_succeeding']}  |  "
         f"regressions: {len(comparison['regressions'])}"
+    )
+    after = summary["after"]
+    lines.append(
+        f"After: {after['succeeded']} succeeded, {after['attempted']} attempted, "
+        f"{after['held']} held, {after['errors']} error(s)"
     )
 
     if comparison["still_succeeding"]:
