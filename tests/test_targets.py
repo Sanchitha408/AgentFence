@@ -404,6 +404,7 @@ def test_cli_attack_against_openai_target_with_runs(tmp_path) -> None:
     assert row["successes"] == 0
     assert row["success_rate"] == 0.0
     assert len(row["attempts"]) == 2
+    assert row["attempts"][0]["blocked_by"] == []
     assert "Repeated: 2 run(s) per attack" in completed.stdout
 
 

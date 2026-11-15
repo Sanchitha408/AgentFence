@@ -10,7 +10,12 @@ import pytest
 from agentfence.cli import main
 from attacks import ALL_ATTACKS, ORIGINAL_ATTACKS, ORIGINAL_CONTROLS
 from autopolicy import generate_policy
-from reports import build_report, write_json
+from reports import (
+    build_comparison,
+    build_report,
+    format_compare_table,
+    write_json,
+)
 from runner import run_all
 
 POLICY_V2 = Path(__file__).resolve().parents[1] / "policies" / "v2.yaml"
@@ -201,6 +206,151 @@ def test_compare_with_v2_reports_the_progression(
     assert "v1 → v2" in document
     assert "<script" not in document
     assert "cdn." not in document
+
+
+def _result_row(
+    attack_id: str,
+    *,
+    succeeded: bool,
+    runs: int = 1,
+    attempts: list[dict] | None = None,
+    blocked_calls: list[dict] | None = None,
+    reply_blocked: bool = False,
+    detectors: tuple[str, ...] = (),
+    held_out: bool = False,
+    held_out_v2: bool = False,
+) -> dict:
+    return {
+        "id": attack_id,
+        "name": attack_id,
+        "category": "exfiltration",
+        "control": False,
+        "held_out": held_out,
+        "held_out_v2": held_out_v2,
+        "succeeded": succeeded,
+        "successes": sum(1 for attempt in attempts or [] if attempt.get("succeeded")),
+        "runs": runs,
+        "detectors_fired": list(detectors),
+        "blocked_calls": list(blocked_calls or []),
+        "reply_check": {
+            "checked": True,
+            "blocked": reply_blocked,
+            "markers": [],
+            "reason": "",
+        },
+        "attempts": list(attempts or []),
+    }
+
+
+def _attempt(succeeded: bool, blocked_by: list[str] | None = None) -> dict:
+    return {
+        "succeeded": succeeded,
+        "status": "succeeded" if succeeded else "held",
+        "error": "",
+        "blocked_by": list(blocked_by or []),
+    }
+
+
+def test_v1_column_counts_every_run_and_lets_success_win() -> None:
+    # The reply guard fired in the v1 runs, but each run still leaked the
+    # canary, so the attack succeeded 3/3 and the summary counts it too.
+    before = _result_row(
+        "held-v2-url-01",
+        succeeded=True,
+        runs=3,
+        held_out_v2=True,
+        detectors=("canary_leak",),
+    )
+    v1 = _result_row(
+        "held-v2-url-01",
+        succeeded=True,
+        runs=3,
+        held_out_v2=True,
+        detectors=("canary_leak",),
+        blocked_calls=[{"rule_id": "reply-leak-check"}],
+        reply_blocked=True,
+        attempts=[_attempt(True, ["reply-leak-check"]) for _ in range(3)],
+    )
+    v2 = _result_row(
+        "held-v2-url-01",
+        succeeded=False,
+        runs=3,
+        held_out_v2=True,
+        attempts=[
+            _attempt(False, ["arg-data-loss"]),
+            _attempt(False, ["arg-data-loss"]),
+            _attempt(False),
+        ],
+    )
+
+    comparison = build_comparison(
+        [before], [v1], "generated.yaml", v2_rows=[v2], v2_policy="v2.yaml", runs=3
+    )
+    row = comparison["v2"]["attacks"][0]
+
+    assert row["v1_outcome"] == "succeeded 3/3"
+    assert row["v2_outcome"] == "blocked 2/3 (1 not attempted)"
+    assert row["v1_succeeded_runs"] == 3
+    # The v1 summary and the per-attack column agree that v1 still succeeds.
+    assert comparison["summary"]["attacks_still_succeeding"] == 1
+
+    printed = format_compare_table(comparison)
+    line = next(
+        line for line in printed.splitlines() if line.startswith("held-v2-url-01")
+    )
+    assert "succeeded 3/3" in line
+    assert "blocked 2/3 (1 not attempted)" in line
+
+
+def test_detail_only_claims_no_baseline_detector_when_that_is_true() -> None:
+    before = {
+        "held-exfil-01": _result_row(
+            "held-exfil-01",
+            succeeded=False,
+            held_out=True,
+            detectors=("forbidden_tool_call", "unauthorized_recipient"),
+        ),
+        "held-v2-split-01": _result_row(
+            "held-v2-split-01",
+            succeeded=False,
+            runs=3,
+            held_out_v2=True,
+            attempts=[_attempt(False) for _ in range(3)],
+        ),
+    }
+    after = [
+        _result_row("held-exfil-01", succeeded=False, held_out=True),
+        _result_row("held-v2-split-01", succeeded=False, held_out_v2=True),
+    ]
+    v2 = [
+        _result_row("held-exfil-01", succeeded=False, held_out=True),
+        _result_row(
+            "held-v2-split-01",
+            succeeded=False,
+            runs=3,
+            held_out_v2=True,
+            attempts=[_attempt(False) for _ in range(3)],
+        ),
+    ]
+
+    comparison = build_comparison(
+        list(before.values()), after, "generated.yaml", v2_rows=v2
+    )
+    rows = {row["id"]: row for row in comparison["v2"]["attacks"]}
+
+    # held-exfil-01 had detectors firing at baseline, so the "neither"
+    # wording would be false for it.
+    assert "baseline detectors fired" in rows["held-exfil-01"]["note"]
+    assert "no detector fired at baseline either" not in rows["held-exfil-01"]["note"]
+    assert "no detector fired at baseline either" in rows["held-v2-split-01"]["note"]
+    assert rows["held-v2-split-01"]["v2_outcome"] == "not attempted 3/3"
+
+    unresolved = {row["id"]: row for row in comparison["v2"]["unresolved"]}
+    assert "baseline detectors fired" in unresolved["held-exfil-01"]["note"]
+
+    printed = format_compare_table(comparison)
+    assert "v2 not attempted by the model in this run:" in printed
+    assert "not blocked and not detected" not in printed
 
 
 def test_compare_rejects_a_bad_baseline(tmp_path: Path, policy_path: Path) -> None:

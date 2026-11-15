@@ -170,8 +170,8 @@ def render_html(comparison: Mapping[str, Any]) -> str:
             + f"<td class=\"mono\">{_e(row['id'])}</td>"
             + f"<td>{_e(row['cohort'])}</td>"
             + f"<td>{_e(row['category'])}</td>"
-            + f"<td>{'succeeded' if row['v1_succeeded'] else ('blocked' if row['v1_blocked_by'] else 'no detection')}</td>"
-            + f"<td>{'succeeded' if row['v2_succeeded'] else ('blocked' if row['v2_blocked_by'] else 'no detection')}</td>"
+            + f"<td>{_e(row.get('v1_outcome') or ('succeeded' if row['v1_succeeded'] else ('blocked' if row['v1_blocked_by'] else 'not attempted')))}</td>"
+            + f"<td>{_e(row.get('v2_outcome') or ('succeeded' if row['v2_succeeded'] else ('blocked' if row['v2_blocked_by'] else 'not attempted')))}</td>"
             + f"<td>{_e(', '.join(row['v2_blocked_by']) or '-')}</td>"
             + f"<td>{_e(row['note'])}</td>"
             + "</tr>"
@@ -190,7 +190,7 @@ def render_html(comparison: Mapping[str, Any]) -> str:
     v2 control false positives: {v2['controls']['after']['false_positives']}/
     {v2['controls']['after']['controls']} ·
     v2 blocks by rule: {_e(blocked_by or '-')}<br>
-    v2 not blocked and not detected: {_e(', '.join(row['id'] for row in (v2.get('unresolved') or [])) or 'none')}
+    v2 not attempted by the model in this run: {_e(', '.join(row['id'] for row in (v2.get('unresolved') or [])) or 'none')}
   </p>
   <h2>v1 vs v2 by attack set</h2>
   <table class="rates"><thead><tr><th></th><th>v1</th><th>v2</th></tr></thead>

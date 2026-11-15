@@ -87,6 +87,96 @@ def _controls(rows: Sequence[Mapping[str, Any]]) -> dict[str, Any]:
     }
 
 
+def _outcome_counts(row: Mapping[str, Any]) -> dict[str, int]:
+    """How the runs behind one attack ended: succeeded, blocked, not attempted.
+
+    ``runs > 1`` rows carry one ``attempts`` entry per run. Reports written
+    before per-run blocking was recorded fall back to the row-level rules.
+    """
+    attempts = list(row.get("attempts") or [])
+    runs = int(row.get("runs") or len(attempts) or 1)
+    counts = {"succeeded": 0, "blocked": 0, "not_attempted": 0, "error": 0}
+
+    if not attempts:
+        runs = max(runs, 1)
+        succeeded = int(
+            row.get("successes") or (1 if row.get("succeeded") else 0)
+        )
+        counts["succeeded"] = min(succeeded, runs)
+        remaining = runs - counts["succeeded"]
+        if remaining:
+            if result_status(row) == "error":
+                counts["error"] = remaining
+            elif _blocked_by(row):
+                counts["blocked"] = remaining
+            else:
+                counts["not_attempted"] = remaining
+    else:
+        row_blocked = bool(_blocked_by(row))
+        for attempt in attempts:
+            if attempt.get("succeeded"):
+                counts["succeeded"] += 1
+            elif attempt.get("error") or attempt.get("status") == "error":
+                counts["error"] += 1
+            elif "blocked_by" in attempt:
+                key = "blocked" if attempt.get("blocked_by") else "not_attempted"
+                counts[key] += 1
+            else:
+                # Older report: blocking was only recorded for the attack.
+                key = "blocked" if row_blocked else "not_attempted"
+                counts[key] += 1
+        counts["not_attempted"] += max(runs - len(attempts), 0)
+
+    counts["runs"] = runs
+    return counts
+
+
+def _outcome_label(counts: Mapping[str, int]) -> str:
+    """The same all-runs wording the summary uses, for one attack column."""
+    runs = max(int(counts["runs"]), 1)
+    succeeded = int(counts["succeeded"])
+    blocked = int(counts["blocked"])
+    not_attempted = int(counts["not_attempted"])
+    errors = int(counts["error"])
+
+    if succeeded:
+        return f"succeeded {succeeded}/{runs}"
+    if blocked:
+        label = f"blocked {blocked}/{runs}"
+        extra = []
+        if not_attempted:
+            extra.append(f"{not_attempted} not attempted")
+        if errors:
+            extra.append(f"{errors} error")
+        return label + (f" ({', '.join(extra)})" if extra else "")
+    if errors == runs:
+        return f"error {errors}/{runs}"
+    label = f"not attempted {not_attempted}/{runs}"
+    if errors:
+        label += f" ({errors} error)"
+    return label
+
+
+def _not_blocked_note(before: Mapping[str, Any]) -> str:
+    """DETAIL text for a v2 run that no rule stopped and no detector proved."""
+    fired = [str(name) for name in (before.get("detectors_fired") or [])]
+    if fired:
+        return (
+            "no v2 rule blocked this call; baseline detectors fired ("
+            + ", ".join(fired)
+            + ") but did not prove the success condition"
+        )
+    if before.get("succeeded"):
+        return (
+            "no v2 rule blocked this call; the baseline run succeeded, so "
+            "this run stayed below what the current detectors can see"
+        )
+    return (
+        "no v2 rule blocked this call, and no detector fired at baseline "
+        "either; the leak stays below what the current detectors can see"
+    )
+
+
 def _blocked_by(row: Mapping[str, Any]) -> list[str]:
     reasons: list[str] = []
     for call in row.get("blocked_calls") or []:
@@ -233,6 +323,12 @@ def _v2_attack_rows(
         control = bool(row.get("control"))
         v1_blocked = _blocked_by(first) if first else []
         v2_blocked = _blocked_by(row)
+        v1_counts = (
+            _outcome_counts(first)
+            if first
+            else {"runs": 1, "succeeded": 0, "blocked": 0, "not_attempted": 1, "error": 0}
+        )
+        v2_counts = _outcome_counts(row)
         if control:
             note = "benign control"
         elif row.get("succeeded"):
@@ -240,10 +336,7 @@ def _v2_attack_rows(
         elif v2_blocked:
             note = "blocked by " + ", ".join(v2_blocked)
         else:
-            note = (
-                "no v2 rule blocked this call, and no detector fired at baseline "
-                "either; the leak stays below what the current detectors can see"
-            )
+            note = _not_blocked_note(old)
         rows.append(
             {
                 "id": attack_id,
@@ -257,6 +350,18 @@ def _v2_attack_rows(
                 "v1_blocked_by": v1_blocked,
                 "v2_blocked_by": v2_blocked,
                 "v2_blocked": bool(v2_blocked),
+                "v1_runs": v1_counts["runs"],
+                "v1_succeeded_runs": v1_counts["succeeded"],
+                "v1_blocked_runs": v1_counts["blocked"],
+                "v1_not_attempted_runs": v1_counts["not_attempted"],
+                "v1_error_runs": v1_counts["error"],
+                "v1_outcome": _outcome_label(v1_counts),
+                "v2_runs": v2_counts["runs"],
+                "v2_succeeded_runs": v2_counts["succeeded"],
+                "v2_blocked_runs": v2_counts["blocked"],
+                "v2_not_attempted_runs": v2_counts["not_attempted"],
+                "v2_error_runs": v2_counts["error"],
+                "v2_outcome": _outcome_label(v2_counts),
                 "detectors_fired": list(row.get("detectors_fired") or []),
                 "note": note,
             }
@@ -400,10 +505,7 @@ def build_comparison(
                 "id": row["id"],
                 "name": row.get("name", ""),
                 "cohort": _cohort(row),
-                "note": (
-                    "no v2 rule blocked this call and no detector fired at "
-                    "baseline either; the leak is below current detection"
-                ),
+                "note": _not_blocked_note(before_by_id.get(row["id"], {})),
             }
             for row in ordered_v2
             if not row.get("control")
@@ -571,7 +673,7 @@ def format_compare_table(comparison: Mapping[str, Any]) -> str:
         )
         if v2.get("unresolved"):
             lines.append(
-                "v2 not blocked and not detected: "
+                "v2 not attempted by the model in this run: "
                 + ", ".join(row["id"] for row in v2["unresolved"])
             )
 
@@ -579,23 +681,17 @@ def format_compare_table(comparison: Mapping[str, Any]) -> str:
         new_ids = set(v2.get("new_attack_ids") or [])
         if rows:
             lines.append("-" * 78)
-            lines.append(f"{'NEW / ALL ATTACK':<22} {'V1':<9} {'V2':<9} DETAIL")
+            lines.append(
+                f"{'NEW / ALL ATTACK':<22} {'V1':<26} {'V2':<26} DETAIL"
+            )
             lines.append("-" * 78)
             for row in rows:
                 if row["control"]:
                     continue
                 if row["id"] not in new_ids and not row["id"].startswith("held-"):
                     continue
-                v1_state = (
-                    "blocked"
-                    if row["v1_blocked_by"]
-                    else ("succeeded" if row["v1_succeeded"] else "allowed")
-                )
-                v2_state = (
-                    "blocked"
-                    if row["v2_blocked_by"]
-                    else ("succeeded" if row["v2_succeeded"] else "allowed")
-                )
+                v1_state = row["v1_outcome"]
+                v2_state = row["v2_outcome"]
                 if row["v2_succeeded"]:
                     detail = "STILL SUCCEEDS - " + row["note"]
                 elif row["v2_blocked_by"]:
@@ -603,6 +699,6 @@ def format_compare_table(comparison: Mapping[str, Any]) -> str:
                 else:
                     detail = row["note"]
                 lines.append(
-                    f"{row['id']:<22} {v1_state:<9} {v2_state:<9} {detail}"
+                    f"{row['id']:<22} {v1_state:<26} {v2_state:<26} {detail}"
                 )
     return "\n".join(lines)

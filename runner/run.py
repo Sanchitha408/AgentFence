@@ -78,6 +78,7 @@ class AttackResult:
                     "stopped": self.stopped,
                     "status": self.status,
                     "error": self.error,
+                    "blocked_by": _blocked_rule_ids(self),
                 }
             ]
         self.runs = max(len(self.attempts), 1)
@@ -261,6 +262,7 @@ def _merge_attempts(
             "stopped": attempt.stopped,
             "status": attempt.status,
             "error": attempt.error,
+            "blocked_by": _blocked_rule_ids(attempt),
         }
         for attempt in attempts
     ]
@@ -281,6 +283,19 @@ def _merge_attempts(
         success_rate=round(successes / len(attempts), 4),
         attempts=attempt_rows,
     )
+
+
+def _blocked_rule_ids(result: AttackResult) -> list[str]:
+    """Rules that stopped a call in one run, for per-run outcome counts."""
+    rules: list[str] = []
+    for call in result.blocked_calls:
+        rule = str(call.get("rule_id") or "")
+        if rule and rule not in rules:
+            rules.append(rule)
+    reply = result.reply_check
+    if reply is not None and reply.blocked and "reply-leak-check" not in rules:
+        rules.append("reply-leak-check")
+    return rules
 
 
 def _error_result(attack: Attack, exc: BaseException) -> AttackResult:
